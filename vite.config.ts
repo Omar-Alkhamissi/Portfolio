@@ -9,6 +9,6 @@ import react from "@vitejs/plugin-react";
 //
 // Adjust the line below to match the repo you push to.
 export default defineConfig({
-  base: "/portfolio/",
+  base: "/Portfolio/",
   plugins: [react()],
 });
