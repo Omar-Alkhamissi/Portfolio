@@ -4,7 +4,6 @@ import { Menu, X } from "lucide-react";
 import { site } from "../data/site";
 import { cn } from "../lib/cn";
 
-// Stops password managers from injecting "Fill" autocomplete overlays.
 const noFill = {
   "data-lpignore": "true",
   "data-1p-ignore": "",
@@ -13,6 +12,26 @@ const noFill = {
   "data-form-type": "other",
   autoComplete: "off",
 } as const;
+
+function LogoMark() {
+  return (
+    <svg
+      viewBox="14 18 38 28"
+      className="h-5 w-5"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M 18 22 L 30 32 L 18 42"
+        stroke="currentColor"
+        strokeWidth={4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <rect x="34" y="40" width="14" height="3" rx="1" fill="currentColor" />
+    </svg>
+  );
+}
 
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
@@ -37,9 +56,6 @@ export function Navbar() {
     <header
       className={cn(
         "fixed inset-x-0 top-0 z-50 transition-colors duration-300",
-        // `backdrop-blur-xl` removed — a fixed blurred bar forces the browser
-        // to repaint blur on every scroll frame. Solid 95% opacity gives the
-        // same legibility against scrolling content without the GPU cost.
         scrolled
           ? "border-b border-white/[0.06] bg-ink-950/95"
           : "border-b border-transparent"
@@ -49,7 +65,6 @@ export function Navbar() {
         className="section flex h-16 items-center justify-between"
         aria-label="Primary"
       >
-        {/* Logo */}
         <a
           href="#top"
           className="group flex items-center gap-2.5"
@@ -57,9 +72,9 @@ export function Navbar() {
         >
           <span
             aria-hidden="true"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-white/[0.03] font-mono text-xs font-semibold text-accent transition-colors group-hover:border-accent/40"
+            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-white/[0.03] text-accent transition-colors group-hover:border-accent/40"
           >
-            {site.initials}
+            <LogoMark />
           </span>
           <span className="font-mono text-sm tracking-tight text-zinc-200">
             {site.name.split(" ")[0]}
@@ -68,7 +83,6 @@ export function Navbar() {
           </span>
         </a>
 
-        {/* Desktop links */}
         <ul className="hidden items-center gap-1 md:flex">
           {site.nav.map((item) => (
             <li key={item.href}>
@@ -93,7 +107,6 @@ export function Navbar() {
           </li>
         </ul>
 
-        {/* Mobile toggle */}
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -106,7 +119,6 @@ export function Navbar() {
         </button>
       </nav>
 
-      {/* Mobile menu */}
       <AnimatePresence>
         {open && (
           <motion.div

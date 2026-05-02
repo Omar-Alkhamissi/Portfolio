@@ -3,7 +3,6 @@ import { ArrowUpRight, ExternalLink, Github } from "lucide-react";
 import { projects } from "../data/projects";
 import { SectionHeading } from "./SectionHeading";
 
-// Stops password managers from injecting "Fill" autocomplete overlays.
 const noFill = {
   "data-lpignore": "true",
   "data-1p-ignore": "",

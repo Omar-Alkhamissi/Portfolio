@@ -24,8 +24,6 @@ const item = {
   },
 };
 
-// These attributes prevent password managers (LastPass, 1Password, Bitwarden,
-// Dashlane, etc.) from injecting their orange "Fill" overlays onto our buttons.
 const noFill = {
   "data-lpignore": "true",
   "data-1p-ignore": "",

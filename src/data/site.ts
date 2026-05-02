@@ -16,7 +16,6 @@ export const site = {
   links: {
     github: "https://github.com/Omar-Alkhamissi",
     linkedin: "https://www.linkedin.com/in/o-alkhamissi/",
-    // Local PDF served from /public — drop your file at public/resume.pdf
     resume: "Omar_Alkhamissi_Resume.pdf",
   },
 

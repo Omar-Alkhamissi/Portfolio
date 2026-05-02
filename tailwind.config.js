@@ -28,7 +28,7 @@ export default {
           600: "#1F2430",
         },
         accent: {
-          DEFAULT: "#7DD3FC",   // soft cyan
+          DEFAULT: "#7DD3FC",
           muted: "#38BDF8",
           deep: "#0EA5E9",
         },

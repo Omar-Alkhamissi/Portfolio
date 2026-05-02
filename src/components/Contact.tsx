@@ -2,7 +2,6 @@ import { motion } from "framer-motion";
 import { Download, Github, Linkedin, Mail } from "lucide-react";
 import { site } from "../data/site";
 
-// Stops password managers from injecting "Fill" autocomplete overlays.
 const noFill = {
   "data-lpignore": "true",
   "data-1p-ignore": "",

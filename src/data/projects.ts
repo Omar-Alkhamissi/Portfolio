@@ -1,10 +1,3 @@
-// 15 real projects from the deep-dive doc, ordered most impressive first.
-//
-// Where the GitHub URL is unknown (private repo or unconfirmed), the link
-// defaults to the GitHub profile root — update each `github` field once you
-// know whether each project lives in its own repo or inside a mono-repo
-// (e.g. `${GH}/CPAProjects/tree/main/Mern/debug-my-heart`).
-
 export type Project = {
   title: string;
   blurb: string;
@@ -20,7 +13,7 @@ const GH = "https://github.com/Omar-Alkhamissi";
 export const projects: Project[] = [
   {
     title: "Debug My Heart",
-    blurb: "MERN dating platform",
+    blurb: "MERN dating platform — Database Lead, team of 5",
     description:
       "A 5,921-LOC MERN dating app with weighted compatibility matching, JWT auth, Stripe-gated subscriptions, and a 6-suite Jest test harness — built as Database Lead in a team of 5.",
     tech: ["React 18", "Node.js", "Express", "MongoDB", "Stripe", "JWT", "Jest"],
