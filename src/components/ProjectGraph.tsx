@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import {
   ExternalLink,
   Github,
@@ -8,9 +8,10 @@ import {
 } from "lucide-react";
 import { projects, type Project } from "../data/projects";
 
-type ClusterKey = "web" | "dotnet" | "systems" | "data" | "other";
+type ClusterKey = "web" | "enterprise" | "patterns" | "systems" | "data" | "java";
 type LabelPlacement = "left" | "right" | "top" | "bottom";
 type PreviewMode = "hovered" | "pinned" | "idle";
+type ProjectFocus = "web" | "mobile" | "backend" | "data" | "systems" | "patterns" | "java";
 
 type Node = {
   id: string;
@@ -34,13 +35,14 @@ type Edge = {
   shared: string[];
 };
 
-const VIEWBOX_W = 1000;
-const VIEWBOX_H = 700;
+const VIEWBOX_W = 1320;
+const VIEWBOX_H = 860;
 const CENTER_X = VIEWBOX_W / 2;
 const CENTER_Y = VIEWBOX_H / 2;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
-const NODE_RADIUS = 24;
-const LABEL_GAP = 10;
+const NODE_RADIUS = 27;
+const LINE_GAP = NODE_RADIUS + 3;
+const LABEL_GAP = 12;
 
 const TECH_WEIGHT: Record<string, number> = {
   react: 1.2,
@@ -61,11 +63,37 @@ const TECH_WEIGHT: Record<string, number> = {
   ".net 9": 0.55,
   "ef core": 1.05,
   "sql server": 0.95,
+  sql: 1.02,
+  "relational data": 1.1,
+  "database systems": 0.9,
+  "data modeling": 0.78,
+  "backend api": 0.72,
+  "frontend app": 0.68,
+  "mobile app": 0.9,
+  "csharp ecosystem": 0.78,
+  "javascript ecosystem": 0.76,
+  "java ecosystem": 0.78,
+  "oop architecture": 0.72,
+  "systems programming": 0.82,
+  "compiler pipeline": 0.9,
+  "real-time systems": 0.85,
   "c#": 0.7,
   grpc: 1.3,
   protobuf: 0.95,
   swagger: 0.45,
   quasar: 0.55,
+  "github actions": 0.5,
+  jest: 0.55,
+  xunit: 0.55,
+  sqlite: 0.75,
+  postgresql: 0.85,
+  plpgsql: 0.82,
+  java: 0.9,
+  swing: 0.45,
+  unity: 0.65,
+  xpath: 0.48,
+  xml: 0.35,
+  "json schema": 0.55,
   "c++": 1.05,
   stl: 0.55,
   templates: 0.35,
@@ -82,19 +110,21 @@ const TECH_WEIGHT: Record<string, number> = {
 };
 
 const CLUSTER_CENTERS: Record<ClusterKey, { x: number; y: number }> = {
-  web: { x: 250, y: 210 },
-  dotnet: { x: 745, y: 220 },
-  systems: { x: 295, y: 520 },
-  data: { x: 760, y: 510 },
-  other: { x: 520, y: 105 },
+  web: { x: 255, y: 240 },
+  enterprise: { x: 655, y: 235 },
+  java: { x: 1070, y: 225 },
+  systems: { x: 300, y: 650 },
+  patterns: { x: 685, y: 645 },
+  data: { x: 1060, y: 585 },
 };
 
 const CLUSTER_ANGLE_OFFSETS: Record<ClusterKey, number> = {
-  web: -1.2,
-  dotnet: -0.25,
-  systems: 2.25,
-  data: 0.7,
-  other: -1.8,
+  web: -1.15,
+  enterprise: -0.2,
+  java: -1.1,
+  systems: 2.3,
+  patterns: 1.1,
+  data: 0.4,
 };
 
 const weightOf = (tech: string) => TECH_WEIGHT[tech] ?? 0.4;
@@ -104,7 +134,7 @@ function clamp(value: number, min: number, max: number) {
 }
 
 function estimateLabelWidth(title: string) {
-  return clamp(68 + title.length * 2.55, 92, 150);
+  return clamp(82 + title.length * 2.7, 108, 182);
 }
 
 function estimateLabelHeight(title: string, width: number) {
@@ -129,7 +159,10 @@ function expandTechTags(tech: string): string[] {
   if (lower === "c# .net 9") return ["c#", ".net", ".net 9"];
   if (lower.startsWith("c# .net")) return ["c#", ".net"];
   if (lower === "ef core") return ["ef core", ".net"];
-  if (lower === "sql server") return ["sql server"];
+  if (lower === "sql") return ["sql", "relational data"];
+  if (lower === "sql server") {
+    return ["sql server", "sql", "relational data", "database systems"];
+  }
   if (lower === "grpc") return ["grpc", ".net"];
   if (lower === "protobuf") return ["protobuf"];
   if (lower === "swagger") return ["swagger"];
@@ -144,15 +177,88 @@ function expandTechTags(tech: string): string[] {
   if (lower === "observer") return ["observer"];
   if (lower === "mvc") return ["mvc"];
   if (lower === "recursive parsing") return ["recursive parsing"];
-  if (lower === "stored procedures") return ["stored procedures"];
-  if (lower === "t-sql") return ["t-sql", "sql server"];
+  if (lower === "stored procedures") {
+    return ["stored procedures", "sql", "relational data", "database systems"];
+  }
+  if (lower === "t-sql") {
+    return ["t-sql", "sql server", "sql", "relational data", "database systems"];
+  }
   if (lower === "csvhelper") return ["csvhelper"];
   if (lower === "mui 7" || lower === "mui") return ["mui"];
   if (lower === "socket.io") return ["socketio"];
   if (lower === "jwt") return ["jwt"];
   if (lower === "stripe") return ["stripe"];
+  if (lower === "github actions") return ["github actions"];
+  if (lower === "jest") return ["jest"];
+  if (lower === "xunit" || lower === "xunit.net") return ["xunit", ".net"];
+  if (lower === "sqlite") return ["sqlite"];
+  if (lower === "postgresql") {
+    return ["postgresql", "sql", "relational data", "database systems"];
+  }
+  if (lower === "plpgsql") {
+    return ["plpgsql", "postgresql", "sql", "relational data", "database systems"];
+  }
+  if (lower === "java") return ["java"];
+  if (lower === "swing") return ["swing", "java"];
+  if (lower === "unity") return ["unity", "c#"];
+  if (lower === "xpath") return ["xpath", "xml"];
+  if (lower === "xml") return ["xml"];
+  if (lower === "json schema") return ["json schema"];
 
   return [lower];
+}
+
+function inferRelationshipTags(project: Project): string[] {
+  const text = `${project.title} ${project.blurb} ${project.description} ${project.tech.join(
+    " ",
+  )}`.toLowerCase();
+  const tags: string[] = [];
+
+  if (/(react|vue|vite|quasar|mui|tailwind|frontend|storefront|spa)/.test(text)) {
+    tags.push("frontend app");
+  }
+
+  if (/(node|express|asp\.net|api|jwt|grpc|protobuf|backend|server)/.test(text)) {
+    tags.push("backend api");
+  }
+
+  if (/(react|vue|node|express|javascript|typescript|socket|vite|mui)/.test(text)) {
+    tags.push("javascript ecosystem");
+  }
+
+  if (/(c#|\.net|asp\.net|ef core|xunit|unity)/.test(text)) {
+    tags.push("csharp ecosystem");
+  }
+
+  if (/(java|swing)/.test(text)) {
+    tags.push("java ecosystem");
+  }
+
+  if (/(sql|database|postgres|plpgsql|t-sql|stored procedure|warehouse|etl|payroll|genealogy|order management|drone management)/.test(text)) {
+    tags.push("relational data", "database systems", "data modeling");
+  }
+
+  if (/(react native|expo|mobile|apk|sqlite|firebase|firestore)/.test(text)) {
+    tags.push("mobile app");
+  }
+
+  if (/(oop|design pattern|mediator|observer|memento|strategy|factory|builder|decorator|state|bridge|inheritance)/.test(text)) {
+    tags.push("oop architecture");
+  }
+
+  if (/(c\+\+|tokenizer|parser|rpn|compiler|decision tree|calendar|data structures)/.test(text)) {
+    tags.push("systems programming");
+  }
+
+  if (/(socket|real-time|streaming|websocket|grpc)/.test(text)) {
+    tags.push("real-time systems");
+  }
+
+  if (/(expression evaluator|tokenizer|parser|rpn)/.test(text)) {
+    tags.push("compiler pipeline");
+  }
+
+  return tags;
 }
 
 function scoreSharedTech(shared: string[], frequency: Map<string, number>) {
@@ -166,27 +272,35 @@ function scoreSharedTech(shared: string[], frequency: Map<string, number>) {
 function classifyProject(project: Project): ClusterKey {
   const tech = project.tech.join(" ").toLowerCase();
 
-  if (
-    /(react|node\.js|express|socket\.io|mongodb|firebase|firestore|expo|mui)/.test(
-      tech,
-    )
-  ) {
-    return "web";
-  }
-
-  if (/(asp\.net|c#|\.net|ef core|grpc|csvhelper|quasar|xunit|swagger)/.test(tech)) {
-    return "dotnet";
+  if (/(sql server|t-sql|stored procedures|postgresql|plpgsql|etl)/.test(tech)) {
+    return "data";
   }
 
   if (/(c\+\+|stl|raii|shared_ptr|templates|recursive parsing)/.test(tech)) {
     return "systems";
   }
 
-  if (/(sql server|t-sql|stored procedures)/.test(tech)) {
-    return "data";
+  if (/(java|swing)/.test(tech)) {
+    return "java";
   }
 
-  return "other";
+  if (/(asp\.net|grpc|ef core|xunit|swagger|github actions)/.test(tech)) {
+    return "enterprise";
+  }
+
+  if (/(design patterns|csvhelper|json schema|xpath|xml|unity)/.test(tech)) {
+    return "patterns";
+  }
+
+  if (
+    /(react|node\.js|express|socket\.io|mongodb|firebase|firestore|expo|mui|vue 3|quasar)/.test(
+      tech,
+    )
+  ) {
+    return "web";
+  }
+
+  return "patterns";
 }
 
 function getLabelPlacement(_node: Pick<Node, "x" | "y">): LabelPlacement {
@@ -285,7 +399,12 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
   });
 
   const expandedTech = items.map((project) =>
-    Array.from(new Set(project.tech.flatMap((tech) => expandTechTags(tech)))),
+    Array.from(
+      new Set([
+        ...project.tech.flatMap((tech) => expandTechTags(tech)),
+        ...inferRelationshipTags(project),
+      ]),
+    ),
   );
   const techFrequency = new Map<string, number>();
 
@@ -383,7 +502,7 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
       .sort((a, b) => b.degree - a.degree || a.id.localeCompare(b.id))
       .forEach((node, index) => {
         const radius =
-          clusterNodes.length === 1 ? 0 : 14 + Math.sqrt(index + 0.45) * 56;
+          clusterNodes.length === 1 ? 0 : 26 + Math.sqrt(index + 0.6) * 70;
         const angle = angleOffset + GOLDEN_ANGLE * index;
 
         node.homeX = center.x + Math.cos(angle) * radius;
@@ -452,10 +571,10 @@ function resolveFootprintOverlaps(nodes: Node[], iterations = 150) {
 
 function runLayout(nodes: Node[], edges: Edge[], ticks = 220) {
   const idToIndex = new Map(nodes.map((node, index) => [node.id, index]));
-  const repulsion = 11500;
-  const damping = 0.82;
-  const homePull = 0.035;
-  const centerPull = 0.004;
+  const repulsion = 14200;
+  const damping = 0.83;
+  const homePull = 0.03;
+  const centerPull = 0.0025;
 
   for (let t = 0; t < ticks; t++) {
     for (let i = 0; i < nodes.length; i++) {
@@ -474,7 +593,7 @@ function runLayout(nodes: Node[], edges: Edge[], ticks = 220) {
         b.vx -= nx * force;
         b.vy -= ny * force;
 
-        const minDistance = 78 + (a.labelWidth + b.labelWidth) * 0.18;
+        const minDistance = 86 + (a.labelWidth + b.labelWidth) * 0.2;
         const collision = minDistance - dist;
 
         if (collision > 0) {
@@ -495,8 +614,8 @@ function runLayout(nodes: Node[], edges: Edge[], ticks = 220) {
       const dist = Math.sqrt(dx * dx + dy * dy) + 0.01;
       const nx = dx / dist;
       const ny = dy / dist;
-      const desiredLength = 205 - Math.min(edge.weight, 3) * 34;
-      const springK = 0.013 + Math.min(edge.weight, 3) * 0.012;
+      const desiredLength = 235 - Math.min(edge.weight, 3) * 36;
+      const springK = 0.012 + Math.min(edge.weight, 3) * 0.011;
       const displacement = dist - desiredLength;
 
       a.vx += nx * displacement * springK;
@@ -521,52 +640,93 @@ function runLayout(nodes: Node[], edges: Edge[], ticks = 220) {
   resolveFootprintOverlaps(nodes);
 }
 
-function getLabelStyle(node: Node) {
-  const placement = getLabelPlacement(node);
-
-  if (placement === "right") {
-    return {
-      left: `${NODE_RADIUS + LABEL_GAP}px`,
-      top: "0px",
-      transform: "translateY(-50%)",
-      textAlign: "left" as const,
-      width: `${node.labelWidth}px`,
-    };
-  }
-
-  if (placement === "left") {
-    return {
-      left: `${-(NODE_RADIUS + LABEL_GAP + node.labelWidth)}px`,
-      top: "0px",
-      transform: "translateY(-50%)",
-      textAlign: "right" as const,
-      width: `${node.labelWidth}px`,
-    };
-  }
-
-  if (placement === "top") {
-    return {
-      left: "0px",
-      top: `${-(NODE_RADIUS + LABEL_GAP + node.labelHeight)}px`,
-      transform: "translateX(-50%)",
-      textAlign: "center" as const,
-      width: `${node.labelWidth}px`,
-    };
-  }
+function getEdgeEndpoints(source: Node, target: Node) {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+  const nx = dx / distance;
+  const ny = dy / distance;
 
   return {
-    left: "0px",
-    top: `${NODE_RADIUS + LABEL_GAP}px`,
-    transform: "translateX(-50%)",
-    textAlign: "center" as const,
-    width: `${node.labelWidth}px`,
+    x1: source.x + nx * LINE_GAP,
+    y1: source.y + ny * LINE_GAP,
+    x2: target.x - nx * LINE_GAP,
+    y2: target.y - ny * LINE_GAP,
   };
+}
+
+function splitLabel(title: string) {
+  if (title.length <= 18) {
+    return [title];
+  }
+
+  const words = title.split(" ");
+  const lines: string[] = [];
+  let current = "";
+
+  for (const word of words) {
+    const next = current ? `${current} ${word}` : word;
+
+    if (next.length > 18 && current) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = next;
+    }
+  }
+
+  if (current) {
+    lines.push(current);
+  }
+
+  if (lines.length <= 2) {
+    return lines;
+  }
+
+  return [lines[0], lines.slice(1).join(" ")];
+}
+
+function projectFocus(project: Project): ProjectFocus {
+  const text = `${project.title} ${project.blurb} ${project.tech.join(" ")}`.toLowerCase();
+
+  if (/(react native|expo|mobile|apk)/.test(text)) return "mobile";
+  if (/(sql|database|postgres|warehouse|etl|payroll|genealogy)/.test(text)) return "data";
+  if (/(c\+\+|compiler|parser|decision tree|calendar|priority queue)/.test(text)) {
+    return "systems";
+  }
+  if (/(java|swing)/.test(text)) return "java";
+  if (/(design patterns|factory|strategy|observer|memento|unity)/.test(text)) {
+    return "patterns";
+  }
+  if (/(api|backend|server|asp\.net|node|express|grpc)/.test(text)) return "backend";
+  return "web";
+}
+
+function whyProjectMatters(project: Project) {
+  const focus = projectFocus(project);
+
+  const copy: Record<ProjectFocus, string> = {
+    web: "It shows complete product thinking: interface, data flow, persistence, and user-facing polish working together instead of living as separate demos.",
+    mobile:
+      "It proves the app can leave the browser and handle device constraints like navigation, local persistence, cloud sync, and installable builds.",
+    backend:
+      "It demonstrates service design, data access, authentication, and API boundaries that are close to the work expected in real application teams.",
+    data: "It makes the data model the product: relationships, constraints, reporting, and persistence are designed so the system can answer useful questions reliably.",
+    systems:
+      "It highlights fundamentals that transfer across stacks: algorithms, memory-aware design, parsing, testing, and clear low-level control.",
+    patterns:
+      "It shows that the architecture is intentional, with patterns used to separate responsibilities rather than decorate the code.",
+    java: "It rounds out the portfolio with object-oriented Java work, domain modeling, and interface-driven structure outside the web stack.",
+  };
+
+  return copy[focus];
 }
 
 export function ProjectGraph() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [lastViewedId, setLastViewedId] = useState<string>(projects[0].title);
+  const shouldReduceMotion = useReducedMotion();
 
   const { nodes, edges } = useMemo(() => {
     const graph = buildGraph(projects);
@@ -629,171 +789,246 @@ export function ProjectGraph() {
   );
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_360px]">
-      <div>
-        <div className="mb-4 flex flex-wrap items-center justify-center gap-4 font-mono text-[11px] text-zinc-500 lg:justify-start">
-          <span className="inline-flex items-center gap-2">
-            <span className="grid h-4 w-4 place-items-center rounded-md border border-accent/40 bg-accent/10 text-accent">
-              <MousePointer2 size={9} />
-            </span>
-            Hover a node
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: "-80px" }}
+      transition={{ duration: 0.5, ease: "easeOut" }}
+      className="mx-auto max-w-[1280px]"
+    >
+      <div className="mb-4 flex flex-wrap items-center justify-center gap-4 font-mono text-[11px] text-zinc-500 xl:justify-start">
+        <span className="inline-flex items-center gap-2">
+          <span className="grid h-4 w-4 place-items-center rounded-md border border-accent/40 bg-accent/10 text-accent">
+            <MousePointer2 size={9} />
           </span>
-          <span className="inline-flex items-center gap-2">
-            <span className="grid h-4 w-4 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300">
-              <Pin size={9} />
-            </span>
-            Click to pin
+          Hover a node
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span className="grid h-4 w-4 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300">
+            <Pin size={9} />
           </span>
-          <span className="inline-flex items-center gap-2">
-            <span className="h-px w-6 bg-accent/40" />
-            Shared technology
-          </span>
-        </div>
-
-        <div className="glass relative overflow-hidden p-3 sm:p-5">
-          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(125,211,252,0.08),transparent_32%),radial-gradient(circle_at_bottom_right,rgba(125,211,252,0.06),transparent_38%)]" />
-          <div className="grid-overlay pointer-events-none absolute inset-0 opacity-50" />
-          <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.03] to-transparent" />
-
-          <div
-            className="relative aspect-[10/7] w-full"
-            onMouseLeave={() => setHoveredId(null)}
-          >
-            <svg
-              viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`}
-              className="absolute inset-0 h-full w-full"
-              preserveAspectRatio="xMidYMid meet"
-              aria-hidden="true"
-            >
-              {edges.map((edge) => {
-                const source = nodeById.get(edge.source)!;
-                const target = nodeById.get(edge.target)!;
-                const highlight = isEdgeHighlighted(edge);
-                const idleWidth = Math.min(0.55 + edge.weight * 0.24, 1.45);
-                const activeWidth = Math.min(0.95 + edge.weight * 0.42, 2.35);
-
-                return (
-                  <motion.line
-                    key={`${edge.source}--${edge.target}`}
-                    x1={source.x}
-                    y1={source.y}
-                    x2={target.x}
-                    y2={target.y}
-                    stroke="rgb(125 211 252)"
-                    initial={{ pathLength: 0, opacity: 0 }}
-                    animate={{
-                      pathLength: 1,
-                      opacity: activeId ? (highlight ? 0.72 : 0.12) : 0.34,
-                      strokeWidth: activeId
-                        ? (highlight ? activeWidth : 0.55)
-                        : idleWidth,
-                    }}
-                    transition={{
-                      pathLength: { duration: 0.7, ease: "easeOut" },
-                      opacity: { duration: 0.22, ease: "easeOut" },
-                      strokeWidth: {
-                        type: "spring",
-                        stiffness: 240,
-                        damping: 28,
-                      },
-                    }}
-                  />
-                );
-              })}
-            </svg>
-
-            <div className="absolute inset-0">
-              {nodes.map((node) => {
-                const Icon = node.project.icon;
-                const focused = activeId === node.id;
-                const dim = !isHighlighted(node.id);
-                const xPct = (node.x / VIEWBOX_W) * 100;
-                const yPct = (node.y / VIEWBOX_H) * 100;
-
-                return (
-                  <motion.button
-                    key={node.id}
-                    type="button"
-                    initial={{ opacity: 0, scale: 0.82 }}
-                    animate={{
-                      opacity: dim ? 0.34 : 1,
-                      scale: focused ? 1.065 : 1,
-                    }}
-                    transition={{
-                      opacity: { duration: 0.2, ease: "easeOut" },
-                      scale: {
-                        type: "spring",
-                        stiffness: 320,
-                        damping: 24,
-                        mass: 0.8,
-                      },
-                    }}
-                    style={{
-                      left: `${xPct}%`,
-                      top: `${yPct}%`,
-                      transform: "translate(-50%, -50%)",
-                      zIndex: focused ? 30 : dim ? 5 : 15,
-                    }}
-                    className="absolute h-0 w-0 appearance-none border-0 bg-transparent p-0 cursor-pointer"
-                    onMouseEnter={() => setHoveredId(node.id)}
-                    onFocus={() => setHoveredId(node.id)}
-                    onBlur={() => setHoveredId(null)}
-                    onClick={() =>
-                      setPinnedId((current) => (current === node.id ? null : node.id))
-                    }
-                    aria-pressed={pinnedId === node.id}
-                    aria-label={`Preview ${node.id}`}
-                  >
-                    {focused && (
-                      <motion.span
-                        aria-hidden="true"
-                        className="pointer-events-none absolute left-0 top-0 h-[4.5rem] w-[4.5rem] -translate-x-1/2 -translate-y-1/2 rounded-[1.4rem] bg-accent/15 blur-md"
-                        initial={{ opacity: 0.22, scale: 0.98 }}
-                        animate={{ opacity: [0.22, 0.38, 0.22], scale: [1, 1.16, 1] }}
-                        transition={{
-                          duration: 2.2,
-                          repeat: Infinity,
-                          ease: "easeInOut",
-                        }}
-                      />
-                    )}
-
-                    <span
-                      className={[
-                        "absolute left-0 top-0 grid h-10 w-10 -translate-x-1/2 -translate-y-1/2 place-items-center rounded-xl border transition-all duration-300 ease-out",
-                        focused
-                          ? "border-accent/70 bg-accent/15 text-accent shadow-[0_0_22px_rgba(125,211,252,0.4)]"
-                          : "border-white/10 bg-white/[0.04] text-zinc-300 hover:border-white/20 hover:bg-white/[0.06]",
-                      ].join(" ")}
-                    >
-                      <Icon size={16} aria-hidden="true" />
-                    </span>
-
-                    <span
-                      style={getLabelStyle(node)}
-                      className={[
-                        "pointer-events-none absolute px-1.5 pt-1 font-mono text-[10px] leading-[1.1] tracking-tight drop-shadow-[0_1px_6px_rgba(0,0,0,0.45)] transition-colors duration-300 ease-out",
-                        focused
-                          ? "text-zinc-100"
-                          : dim
-                            ? "text-zinc-600"
-                            : "text-zinc-400",
-                      ].join(" ")}
-                    >
-                      {node.project.title}
-                    </span>
-                  </motion.button>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+          Click to pin
+        </span>
+        <span className="inline-flex items-center gap-2">
+          <span className="h-px w-6 bg-accent/40" />
+          Related stack / concept
+        </span>
       </div>
 
-      <aside className="lg:sticky lg:top-24 lg:self-start" aria-live="polite">
+      <div className="glass relative overflow-hidden p-3 sm:p-5 md:p-6">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(125,211,252,0.08),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(125,211,252,0.06),transparent_32%)]" />
+        <div className="grid-overlay pointer-events-none absolute inset-0 opacity-50" />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.03] to-transparent" />
+
+        <motion.div
+          className="relative aspect-[16/10] w-full"
+          onMouseLeave={() => setHoveredId(null)}
+          initial={false}
+        >
+          <svg
+            viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`}
+            className="absolute inset-0 h-full w-full"
+            preserveAspectRatio="xMidYMid meet"
+            aria-label="Project graph"
+            role="img"
+          >
+            {edges.map((edge) => {
+              const source = nodeById.get(edge.source)!;
+              const target = nodeById.get(edge.target)!;
+              const endpoints = getEdgeEndpoints(source, target);
+              const highlight = isEdgeHighlighted(edge);
+              const idleWidth = Math.min(0.72 + edge.weight * 0.3, 1.75);
+              const activeWidth = Math.min(0.95 + edge.weight * 0.42, 2.35);
+              const idleOpacity = shouldReduceMotion ? 0.42 : [0.34, 0.58, 0.38];
+              const activeOpacity = highlight ? 0.74 : 0.12;
+
+              return (
+                <motion.line
+                  key={`${edge.source}--${edge.target}`}
+                  x1={endpoints.x1}
+                  y1={endpoints.y1}
+                  x2={endpoints.x2}
+                  y2={endpoints.y2}
+                  stroke="rgb(125 211 252)"
+                  animate={{
+                    opacity: activeId ? activeOpacity : idleOpacity,
+                    strokeWidth: activeId
+                      ? (highlight ? activeWidth : 0.55)
+                      : idleWidth,
+                  }}
+                  transition={{
+                    opacity: activeId
+                      ? { duration: 0.22, ease: "easeOut" }
+                      : {
+                          duration: shouldReduceMotion ? 0.01 : 3.2,
+                          repeat: shouldReduceMotion ? 0 : Infinity,
+                          ease: "easeInOut",
+                        },
+                    strokeWidth: {
+                      type: "spring",
+                      stiffness: 240,
+                      damping: 28,
+                    },
+                  }}
+                />
+              );
+            })}
+            {nodes.map((node, index) => {
+              const Icon = node.project.icon;
+              const focused = activeId === node.id;
+              const dim = !isHighlighted(node.id);
+              const labelLines = splitLabel(node.project.title);
+              const labelY = node.y + NODE_RADIUS + 20;
+
+              return (
+                <motion.g
+                  key={node.id}
+                  role="button"
+                  tabIndex={0}
+                  animate={{
+                    opacity: dim ? 0.32 : 1,
+                    scale: focused ? 1.08 : 1,
+                  }}
+                  transition={{
+                    opacity: {
+                      duration: shouldReduceMotion ? 0.01 : 0.2,
+                      ease: "easeOut",
+                    },
+                    scale: {
+                      type: "spring",
+                      stiffness: 320,
+                      damping: 24,
+                      mass: 0.8,
+                    },
+                  }}
+                  style={{
+                    cursor: "pointer",
+                    outline: "none",
+                    transformOrigin: `${node.x}px ${node.y}px`,
+                  }}
+                  onMouseEnter={() => setHoveredId(node.id)}
+                  onFocus={() => setHoveredId(node.id)}
+                  onBlur={() => setHoveredId(null)}
+                  onClick={() =>
+                    setPinnedId((current) => (current === node.id ? null : node.id))
+                  }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      setPinnedId((current) =>
+                        current === node.id ? null : node.id,
+                      );
+                    }
+                  }}
+                  aria-pressed={pinnedId === node.id}
+                  aria-label={`Preview ${node.id}`}
+                >
+                  <circle
+                    cx={node.x}
+                    cy={node.y}
+                    r={NODE_RADIUS + 14}
+                    fill="transparent"
+                    pointerEvents="all"
+                  />
+                  {focused && (
+                    <motion.circle
+                      aria-hidden="true"
+                      cx={node.x}
+                      cy={node.y}
+                      r={NODE_RADIUS + 17}
+                      fill="rgb(125 211 252)"
+                      initial={{ opacity: 0.22, scale: 0.96 }}
+                      animate={{
+                        opacity: shouldReduceMotion ? 0.28 : [0.2, 0.42, 0.2],
+                        scale: shouldReduceMotion ? 1 : [1, 1.18, 1],
+                      }}
+                      transition={{
+                        duration: 2.1,
+                        repeat: shouldReduceMotion ? 0 : Infinity,
+                        ease: "easeInOut",
+                      }}
+                    />
+                  )}
+
+                  {!focused && !dim && (
+                    <motion.circle
+                      aria-hidden="true"
+                      cx={node.x}
+                      cy={node.y}
+                      r={NODE_RADIUS + 7}
+                      fill="rgb(125 211 252)"
+                      opacity={0.1}
+                      animate={
+                        shouldReduceMotion
+                          ? { opacity: 0.1, scale: 1 }
+                          : {
+                              opacity: [0.07, 0.18, 0.08],
+                              scale: [1, 1.16, 1],
+                            }
+                      }
+                      transition={{
+                        duration: 2.8 + (index % 5) * 0.28,
+                        repeat: shouldReduceMotion ? 0 : Infinity,
+                        ease: "easeInOut",
+                      }}
+                      style={{ transformOrigin: `${node.x}px ${node.y}px` }}
+                    />
+                  )}
+
+                  <circle
+                    cx={node.x}
+                    cy={node.y}
+                    r={NODE_RADIUS}
+                    fill={focused ? "rgba(125,211,252,0.16)" : "rgba(255,255,255,0.045)"}
+                    stroke={focused ? "rgba(125,211,252,0.78)" : "rgba(255,255,255,0.12)"}
+                    strokeWidth={focused ? 1.5 : 1}
+                  />
+                  <Icon
+                    x={node.x - 8.75}
+                    y={node.y - 8.75}
+                    width={17.5}
+                    height={17.5}
+                    color={focused ? "#7dd3fc" : "#d4d4d8"}
+                    strokeWidth={2}
+                    aria-hidden="true"
+                    pointerEvents="none"
+                  />
+                  <text
+                    x={node.x}
+                    y={labelY}
+                    textAnchor="middle"
+                    className={[
+                      "pointer-events-none fill-current font-mono drop-shadow-[0_1px_6px_rgba(0,0,0,0.55)] transition-colors duration-300",
+                      focused
+                        ? "text-zinc-100"
+                        : dim
+                          ? "text-zinc-600"
+                          : "text-zinc-400",
+                    ].join(" ")}
+                    fontSize={12}
+                    fontWeight={focused ? 700 : 500}
+                  >
+                    {labelLines.map((line, lineIndex) => (
+                      <tspan
+                        key={line}
+                        x={node.x}
+                        dy={lineIndex === 0 ? 0 : 14}
+                      >
+                        {line}
+                      </tspan>
+                    ))}
+                  </text>
+                </motion.g>
+              );
+            })}
+          </svg>
+        </motion.div>
+      </div>
+
+      <div className="mt-5" aria-live="polite">
         <PreviewCard project={previewProject} mode={previewMode} />
-      </aside>
-    </div>
+      </div>
+    </motion.div>
   );
 }
 
@@ -828,7 +1063,7 @@ function PreviewCard({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.25, ease: "easeOut" }}
-      className="glass flex h-full flex-col p-6"
+      className="glass p-6 sm:p-7"
     >
       <div className="mb-3 flex items-center gap-2">
         <span
@@ -845,69 +1080,112 @@ function PreviewCard({
         </span>
       </div>
 
-      <div className="flex items-start gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-accent/30 bg-accent/10 text-accent">
-          <Icon size={18} aria-hidden="true" />
-        </span>
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(300px,0.85fr)] lg:items-start">
         <div className="min-w-0">
-          <h3 className="text-base font-semibold leading-tight tracking-tight text-zinc-100">
-            {project.title}
-          </h3>
-          <p className="mt-0.5 text-xs text-zinc-400">{project.blurb}</p>
+          <div className="flex items-start gap-3">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-accent/30 bg-accent/10 text-accent">
+              <Icon size={19} aria-hidden="true" />
+            </span>
+            <div className="min-w-0">
+              <h3 className="text-lg font-semibold leading-tight tracking-tight text-zinc-100">
+                {project.title}
+              </h3>
+              <p className="mt-1 text-sm font-medium text-zinc-300">
+                {project.blurb}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.72fr)]">
+            <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+                Project Summary
+              </p>
+              <p className="mt-2 text-[14px] leading-7 text-zinc-300">
+                {project.description}
+              </p>
+            </div>
+
+            <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-4">
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+                Why It Matters
+              </p>
+              <p className="mt-2 text-[13px] leading-6 text-zinc-400">
+                {whyProjectMatters(project)}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+              Key Features
+            </p>
+            <ul className="mt-3 grid gap-3 md:grid-cols-2">
+              {project.bullets.slice(0, 4).map((b) => (
+                <li
+                  key={b}
+                  className="flex gap-2.5 text-[13px] leading-6 text-zinc-400"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="mt-2.5 inline-block h-px w-3 shrink-0 bg-accent/60"
+                  />
+                  <span>{b}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
-      </div>
 
-      <p className="mt-4 text-sm leading-relaxed text-zinc-300">
-        {project.description}
-      </p>
+        <div className="lg:border-l lg:border-white/[0.06] lg:pl-6">
+          <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-zinc-500">
+            Main Technologies
+          </p>
 
-      <ul className="mt-4 space-y-2">
-        {project.bullets.slice(0, 2).map((b) => (
-          <li
-            key={b}
-            className="flex gap-2 text-[12.5px] leading-relaxed text-zinc-400"
-          >
-            <span
-              aria-hidden="true"
-              className="mt-1.5 inline-block h-px w-2.5 shrink-0 bg-accent/60"
-            />
-            <span>{b}</span>
-          </li>
-        ))}
-      </ul>
+          <ul className="mt-3 flex flex-wrap gap-1.5">
+            {project.tech.slice(0, 8).map((t) => (
+              <li key={t} className="badge text-[10px]">
+                {t}
+              </li>
+            ))}
+            {project.tech.length > 8 && (
+              <li className="badge text-[10px] text-zinc-500">
+                +{project.tech.length - 8}
+              </li>
+            )}
+          </ul>
 
-      <ul className="mt-4 flex flex-wrap gap-1">
-        {project.tech.slice(0, 6).map((t) => (
-          <li key={t} className="badge text-[10px]">
-            {t}
-          </li>
-        ))}
-        {project.tech.length > 6 && (
-          <li className="badge text-[10px] text-zinc-500">
-            +{project.tech.length - 6}
-          </li>
-        )}
-      </ul>
+          <div className="mt-5 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+              What It Does
+            </p>
+            <p className="mt-2 text-[13px] leading-6 text-zinc-400">
+              {project.blurb}. It combines the listed stack into a focused build
+              with working data flow, structure, and a clear project outcome.
+            </p>
+          </div>
 
-      <div className="mt-auto flex flex-wrap gap-2 border-t border-white/[0.06] pt-4">
-        <a
-          href={project.github}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-2.5 py-1.5 text-xs text-zinc-300 hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
-        >
-          <Github size={12} aria-hidden="true" /> GitHub
-        </a>
-        {project.liveDemo && (
-          <a
-            href={project.liveDemo}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5 text-xs font-medium text-accent hover:border-accent/60 hover:bg-accent/15"
-          >
-            <ExternalLink size={12} aria-hidden="true" /> Live
-          </a>
-        )}
+          <div className="mt-5 flex flex-wrap gap-2 border-t border-white/[0.06] pt-4">
+            <a
+              href={project.github}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.03] px-3 py-2 text-xs text-zinc-300 hover:border-white/20 hover:bg-white/[0.06] hover:text-white"
+            >
+              <Github size={12} aria-hidden="true" /> GitHub
+            </a>
+            {project.liveDemo && (
+              <a
+                href={project.liveDemo}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 py-2 text-xs font-medium text-accent hover:border-accent/60 hover:bg-accent/15"
+              >
+                <ExternalLink size={12} aria-hidden="true" /> Live
+              </a>
+            )}
+          </div>
+        </div>
       </div>
     </motion.div>
   );

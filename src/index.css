@@ -61,7 +61,7 @@
   }
 
   .section {
-    @apply mx-auto max-w-6xl px-5 sm:px-6 lg:px-8;
+    @apply mx-auto max-w-[1280px] px-5 sm:px-6 lg:px-8;
   }
 
   .eyebrow {
@@ -110,18 +110,3 @@
   }
 }
 
-/* -------------------------------------------------------------
-   Orbital animations for the SolarSystem component.
-   Ring direction is chosen in the component via animationDirection,
-   so adjacent rings can alternate clockwise / counterclockwise while
-   labels counter-rotate to stay upright.
-   -------------------------------------------------------------*/
-@keyframes orbit-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
-}
-
-@keyframes counter-orbit-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(-360deg); }
-}

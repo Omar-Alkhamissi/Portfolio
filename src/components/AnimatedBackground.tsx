@@ -1,19 +1,17 @@
 import { useEffect, useRef } from "react";
 
 /**
- * Animated background — a parallax starfield with a slow drifting nebula
- * and a subtle interactive vignette that follows the cursor.
+ * Animated background — a drifting starfield with a soft nebula wash.
  *
  * Implementation notes:
  * - One <canvas> element, sized to viewport with devicePixelRatio scaling.
  * - Stars are stored in a flat typed array (Float32Array) for cache locality.
  * - Animation runs in a single requestAnimationFrame loop.
- * - Honors `prefers-reduced-motion` by rendering a single static frame.
+ * - Honors `prefers-reduced-motion` by slowing motion instead of freezing it.
  * - Pauses when the tab is hidden to save CPU.
  */
 export function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const pointerRef = useRef({ x: 0.5, y: 0.5 });
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -21,28 +19,44 @@ export function AnimatedBackground() {
     const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) return;
 
-    const reduceMotion = window.matchMedia(
+    const reduceMotionQuery = window.matchMedia(
       "(prefers-reduced-motion: reduce)"
-    ).matches;
+    );
+    let reduceMotion = reduceMotionQuery.matches;
+    const motionScale = () => (reduceMotion ? 0.5 : 1);
 
     let dpr = Math.min(window.devicePixelRatio || 1, 2);
     let width = window.innerWidth;
     let height = window.innerHeight;
 
     // Star field — three depth layers for parallax.
-    // Each star: [x, y, baseRadius, twinklePhase, layer]
+    // Each star: [x, y, baseRadius, twinklePhase, layer, angle, speed, driftPhase, driftRate, twinkleRate]
     const STAR_COUNT = Math.min(
       Math.floor((width * height) / 9000),
       260 // hard cap for low-end devices
     );
-    const stars = new Float32Array(STAR_COUNT * 5);
+    const STAR_SIZE = 10;
+    const stars = new Float32Array(STAR_COUNT * STAR_SIZE);
+    const layerSpeedRange = [
+      { min: 0.08, max: 0.14 },
+      { min: 0.14, max: 0.22 },
+      { min: 0.22, max: 0.32 },
+    ] as const;
     const seed = (i: number) => {
+      const idx = i * STAR_SIZE;
       const layer = i % 3; // 0 = far, 1 = mid, 2 = near
-      stars[i * 5 + 0] = Math.random() * width;
-      stars[i * 5 + 1] = Math.random() * height;
-      stars[i * 5 + 2] = 0.3 + Math.random() * (layer === 2 ? 1.6 : 0.9);
-      stars[i * 5 + 3] = Math.random() * Math.PI * 2;
-      stars[i * 5 + 4] = layer;
+      const speedRange = layerSpeedRange[layer];
+      stars[idx + 0] = Math.random() * width;
+      stars[idx + 1] = Math.random() * height;
+      stars[idx + 2] = 0.42 + Math.random() * (layer === 2 ? 1.45 : 0.95);
+      stars[idx + 3] = Math.random() * Math.PI * 2;
+      stars[idx + 4] = layer;
+      stars[idx + 5] = Math.random() * Math.PI * 2;
+      stars[idx + 6] =
+        speedRange.min + Math.random() * (speedRange.max - speedRange.min);
+      stars[idx + 7] = Math.random() * Math.PI * 2;
+      stars[idx + 8] = 0.005 + Math.random() * 0.01;
+      stars[idx + 9] = 0.028 + Math.random() * 0.045;
     };
     for (let i = 0; i < STAR_COUNT; i++) seed(i);
 
@@ -74,27 +88,22 @@ export function AnimatedBackground() {
     };
     resize();
 
-    const onPointerMove = (e: PointerEvent) => {
-      pointerRef.current.x = e.clientX / window.innerWidth;
-      pointerRef.current.y = e.clientY / window.innerHeight;
-    };
-
     let frameId = 0;
     let last = performance.now();
     const draw = (now: number) => {
       const dt = Math.min((now - last) / 16.6667, 2); // delta in 60fps frames, clamp
       last = now;
 
-      // Clear with translucent ink to leave subtle motion trails on near-layer stars
-      ctx.fillStyle = "rgba(8, 9, 12, 1)";
+      // Leave a faint trail so the drift reads more clearly at idle.
+      ctx.fillStyle = "rgba(8, 9, 12, 0.95)";
       ctx.fillRect(0, 0, width, height);
 
       // Nebula blobs
       ctx.save();
       ctx.globalCompositeOperation = "lighter";
       for (const b of blobs) {
-        b.x += b.vx * dt;
-        b.y += b.vy * dt;
+        b.x += b.vx * dt * motionScale();
+        b.y += b.vy * dt * motionScale();
         if (b.x < -b.r) b.x = width + b.r;
         if (b.x > width + b.r) b.x = -b.r;
         if (b.y < -b.r) b.y = height + b.r;
@@ -109,51 +118,54 @@ export function AnimatedBackground() {
       }
       ctx.restore();
 
-      // Pointer parallax — shift stars subtly toward cursor
-      const px = (pointerRef.current.x - 0.5) * 16;
-      const py = (pointerRef.current.y - 0.5) * 16;
-
       // Stars
+      ctx.save();
+      ctx.globalCompositeOperation = "lighter";
       for (let i = 0; i < STAR_COUNT; i++) {
-        const idx = i * 5;
+        const idx = i * STAR_SIZE;
         const layer = stars[idx + 4];
-        const parX = px * (layer + 1) * 0.5;
-        const parY = py * (layer + 1) * 0.5;
-        stars[idx + 3] += 0.012 * dt; // twinkle phase
-        const twinkle = 0.55 + 0.45 * Math.sin(stars[idx + 3]);
+        const wrapPad = 24 + layer * 10;
+        stars[idx + 7] += stars[idx + 8] * dt * motionScale();
+        const angle =
+          stars[idx + 5] +
+          Math.sin(stars[idx + 7]) * 1.05 +
+          Math.cos(stars[idx + 7] * 0.47 + i * 0.31) * 0.3;
+        stars[idx + 0] += Math.cos(angle) * stars[idx + 6] * dt * motionScale();
+        stars[idx + 1] += Math.sin(angle) * stars[idx + 6] * dt * motionScale();
+        if (stars[idx + 0] < -wrapPad) stars[idx + 0] = width + wrapPad;
+        else if (stars[idx + 0] > width + wrapPad) stars[idx + 0] = -wrapPad;
+        if (stars[idx + 1] < -wrapPad) stars[idx + 1] = height + wrapPad;
+        else if (stars[idx + 1] > height + wrapPad) stars[idx + 1] = -wrapPad;
+        stars[idx + 3] += stars[idx + 9] * dt * motionScale();
+        const twinkleWave = 0.5 + 0.5 * Math.sin(stars[idx + 3]);
+        const twinkle = 0.72 + twinkleWave * 0.95;
+        const sparkle =
+          Math.pow(0.5 + 0.5 * Math.sin(stars[idx + 3] * 0.45 + i * 0.61), 8) *
+          (0.08 + layer * 0.08);
         const r = stars[idx + 2] * twinkle;
-        const alpha = 0.35 + 0.55 * (layer / 2) * twinkle;
+        const alpha = 0.16 + layer * 0.12 + twinkleWave * 0.38 + sparkle;
+        const x = stars[idx];
+        const y = stars[idx + 1];
+        ctx.beginPath();
+        ctx.fillStyle = `rgba(125, 211, 252, ${0.04 + alpha * 0.12})`;
+        ctx.arc(x, y, r * (2.5 + layer * 0.45), 0, Math.PI * 2);
+        ctx.fill();
         ctx.beginPath();
         ctx.fillStyle = `rgba(190, 220, 255, ${alpha})`;
-        ctx.arc(stars[idx] + parX, stars[idx + 1] + parY, r, 0, Math.PI * 2);
+        ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
       }
-
-      // Cursor halo
-      ctx.save();
-      const hx = pointerRef.current.x * width;
-      const hy = pointerRef.current.y * height;
-      const halo = ctx.createRadialGradient(hx, hy, 0, hx, hy, 220);
-      halo.addColorStop(0, "rgba(125, 211, 252, 0.07)");
-      halo.addColorStop(1, "rgba(125, 211, 252, 0)");
-      ctx.fillStyle = halo;
-      ctx.fillRect(0, 0, width, height);
       ctx.restore();
 
-      if (!reduceMotion && !document.hidden) {
+      if (!document.hidden) {
         frameId = requestAnimationFrame(draw);
       }
     };
 
-    if (reduceMotion) {
-      // Render one frame so the field still feels textured.
-      draw(performance.now());
-    } else {
-      frameId = requestAnimationFrame(draw);
-    }
+    frameId = requestAnimationFrame(draw);
 
     const onVisibility = () => {
-      if (!document.hidden && !reduceMotion) {
+      if (!document.hidden) {
         last = performance.now();
         frameId = requestAnimationFrame(draw);
       } else {
@@ -161,15 +173,19 @@ export function AnimatedBackground() {
       }
     };
 
+    const onReduceMotionChange = (e: MediaQueryListEvent) => {
+      reduceMotion = e.matches;
+    };
+
     window.addEventListener("resize", resize);
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
     document.addEventListener("visibilitychange", onVisibility);
+    reduceMotionQuery.addEventListener("change", onReduceMotionChange);
 
     return () => {
       cancelAnimationFrame(frameId);
       window.removeEventListener("resize", resize);
-      window.removeEventListener("pointermove", onPointerMove);
       document.removeEventListener("visibilitychange", onVisibility);
+      reduceMotionQuery.removeEventListener("change", onReduceMotionChange);
     };
   }, []);
 

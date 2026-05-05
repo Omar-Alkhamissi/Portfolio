@@ -91,7 +91,7 @@ export function Navbar() {
                 className="rounded-md px-3 py-2 font-mono text-[13px] text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-white"
               >
                 <span className="text-accent/70">/</span>
-                {item.label.toLowerCase()}
+                {item.label}
               </a>
             </li>
           ))}
@@ -138,7 +138,7 @@ export function Navbar() {
                     className="block rounded-md px-3 py-2.5 font-mono text-sm text-zinc-300 hover:bg-white/[0.04] hover:text-white"
                   >
                     <span className="text-accent/70">/</span>
-                    {item.label.toLowerCase()}
+                    {item.label}
                   </a>
                 </li>
               ))}

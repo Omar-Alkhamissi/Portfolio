@@ -14,8 +14,7 @@ export default function App() {
       <AnimatedBackground />
       <Navbar />
       <main>
-        <Hero />
-        <About />
+        <Hero aside={<About variant="panel" />} />
         <Skills />
         <Projects />
         <Experience />
