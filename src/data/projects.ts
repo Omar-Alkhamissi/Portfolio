@@ -1,3 +1,22 @@
+import type { LucideIcon } from "lucide-react";
+import {
+  Heart,
+  Calculator,
+  LifeBuoy,
+  Grid3x3,
+  UtensilsCrossed,
+  MessagesSquare,
+  Plane,
+  CalendarDays,
+  FlaskConical,
+  Coffee,
+  PenTool,
+  KeyRound,
+  Database,
+  Stethoscope,
+  ShoppingCart,
+} from "lucide-react";
+
 export type Project = {
   title: string;
   blurb: string;
@@ -6,6 +25,7 @@ export type Project = {
   bullets: string[];
   github: string;
   liveDemo?: string;
+  icon: LucideIcon;
 };
 
 const GH = "https://github.com/Omar-Alkhamissi";
@@ -13,6 +33,7 @@ const GH = "https://github.com/Omar-Alkhamissi";
 export const projects: Project[] = [
   {
     title: "Debug My Heart",
+    icon: Heart,
     blurb: "MERN dating platform — Database Lead, team of 5",
     description:
       "A 5,921-LOC MERN dating app with weighted compatibility matching, JWT auth, Stripe-gated subscriptions, and a 6-suite Jest test harness — built as Database Lead in a team of 5.",
@@ -26,6 +47,7 @@ export const projects: Project[] = [
   },
   {
     title: "Expression Evaluator (ee24Complete)",
+    icon: Calculator,
     blurb: "5-stage C++20 tokenizer → parser → RPN evaluator",
     description:
       "A modular expression evaluation pipeline (7,237 LOC, 41 files) separating tokenization, parsing, RPN conversion, and evaluation into independent C++20 components with a clean facade.",
@@ -39,6 +61,7 @@ export const projects: Project[] = [
   },
   {
     title: "Employee Helpdesk Portal",
+    icon: LifeBuoy,
     blurb: "N-tier ASP.NET Core helpdesk with CI/CD",
     description:
       "A 4-layer N-tier helpdesk (Controllers → ViewModels → DAOs → IRepository<T>) with optimistic concurrency detection and a GitHub Actions build/test pipeline.",
@@ -52,6 +75,7 @@ export const projects: Project[] = [
   },
   {
     title: "Wordle gRPC Microservices",
+    icon: Grid3x3,
     blurb: "3-tier .NET 9 gRPC system with bidirectional streaming",
     description:
       "A 3-service Wordle implementation: WordServer provides daily seeded words, WordleGameServer manages a 6-guess loop, and a dual-threaded console client renders ANSI-color feedback over gRPC streams.",
@@ -65,6 +89,7 @@ export const projects: Project[] = [
   },
   {
     title: "Fast Food Ordering",
+    icon: UtensilsCrossed,
     blurb: "ASP.NET 8 + Vue 3 ordering platform",
     description:
       "A full-stack ordering platform with EF Core code-first migrations, RFC2898 password hashing, JWT auth, and a Vue 3 + Quasar frontend served via async DB transactions.",
@@ -78,6 +103,7 @@ export const projects: Project[] = [
   },
   {
     title: "Real-Time Chat App",
+    icon: MessagesSquare,
     blurb: "Socket.IO chat with /edit, /del, typing indicators",
     description:
       "A real-time chat platform with Socket.IO bidirectional pub/sub, slash-command message editing, multi-user typing indicators, and per-user color allocation across rooms.",
@@ -91,6 +117,7 @@ export const projects: Project[] = [
   },
   {
     title: "Travel Advisory Aggregator",
+    icon: Plane,
     blurb: "Government API ETL with MongoDB & React",
     description:
       "A full-stack travel advisory tracker that ingests live government data, joins ISO 3166-1 country metadata, and surfaces it through a React + MUI bookmarkable UI.",
@@ -104,6 +131,7 @@ export const projects: Project[] = [
   },
   {
     title: "Khronos Multi-Calendar Library",
+    icon: CalendarDays,
     blurb: "C++17 cross-calendar dates via Julian Day hub",
     description:
       "A C++17 library converting between Gregorian, Julian, Hebrew, and Islamic calendars (4,055 LOC, 42 files) using Julian Day Number as a universal interchange hub.",
@@ -117,6 +145,7 @@ export const projects: Project[] = [
   },
   {
     title: "Stoichiometry Library",
+    icon: FlaskConical,
     blurb: ".NET 9 chemical formula parser & periodic table",
     description:
       "A library + CLI parsing chemical formulas with multi-pass recursive descent, lazy-loaded periodic table from CSV, and a 5-rule validation pipeline (1,353 LOC, 8 files).",
@@ -130,6 +159,7 @@ export const projects: Project[] = [
   },
   {
     title: "Coffee Shop POS",
+    icon: Coffee,
     blurb: ".NET 8 POS — State + Bridge + Decorator patterns",
     description:
       "A point-of-sale showcase implementing three Gang-of-Four patterns in one cohesive system: State for order lifecycle, Bridge for brewing, Decorator for customization.",
@@ -143,6 +173,7 @@ export const projects: Project[] = [
   },
   {
     title: "Collaborative Drawing App",
+    icon: PenTool,
     blurb: ".NET 8 multi-user canvas — Mediator + Observer + Memento",
     description:
       "A multi-user drawing system implementing Mediator (command routing), Observer (broadcast updates), and Memento (full undo/redo with shape snapshots).",
@@ -156,6 +187,7 @@ export const projects: Project[] = [
   },
   {
     title: "Enigma Machine Simulator",
+    icon: KeyRound,
     blurb: "Java Swing simulator of the WWII rotor cipher",
     description:
       "A historically accurate Enigma machine simulator with MVC architecture, 3-rotor signal propagation, and an interactive GUI with 52 positioned key/lamp elements.",
@@ -169,6 +201,7 @@ export const projects: Project[] = [
   },
   {
     title: "Order Management Database",
+    icon: Database,
     blurb: "T-SQL system with nested cursors & UDFs",
     description:
       "A full T-SQL relational system with 8 tables, 25 integrity constraints, three scalar UDFs, and a stored procedure using nested cursors for report-style output.",
@@ -182,6 +215,7 @@ export const projects: Project[] = [
   },
   {
     title: "Patient Diagnosis Classifier",
+    icon: Stethoscope,
     blurb: "C++17 binary decision tree with lambda predicates",
     description:
       "A medical decision tree classifier evaluating 9 diagnostic attributes via recursive lambda-predicate traversal across 1,000+ patient records.",
@@ -195,6 +229,7 @@ export const projects: Project[] = [
   },
   {
     title: "Groceries Mobile App",
+    icon: ShoppingCart,
     blurb: "React Native + Firebase — deployed Android APK",
     description:
       "A cross-platform mobile grocery list app deployed as an installable Android APK, integrating Firebase Firestore for cloud document storage.",
