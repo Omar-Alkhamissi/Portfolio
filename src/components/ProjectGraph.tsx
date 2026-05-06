@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import {
   ExternalLink,
@@ -34,6 +34,38 @@ type Edge = {
   weight: number;
   shared: string[];
   color: string;
+};
+
+type TubeSegment = {
+  edge: Edge;
+  startId: string;
+  endId: string;
+  startNodeX: number;
+  startNodeY: number;
+  endNodeX: number;
+  endNodeY: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
+type ClusterFlow = {
+  cluster: ClusterKey;
+  delay: number;
+  segments: TubeSegment[];
+};
+
+type FlowEdgeCandidate = {
+  edge: Edge;
+  source: Node;
+  target: Node;
+  score: number;
+  key: string;
+};
+
+type ArrivalGlow = {
+  token: number;
 };
 
 const VIEWBOX_W = 1320;
@@ -184,7 +216,7 @@ const EDGE_TAG_COLORS: Record<string, string> = {
 
 const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
   {
-    label: "React / Web",
+    label: "Web",
     color: "#61dafb",
     tags: [
       "react",
@@ -199,17 +231,17 @@ const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
     ],
   },
   {
-    label: "Mobile / Firebase",
+    label: "Mobile",
     color: "#facc15",
     tags: ["react native", "expo", "firebase", "firestore", "mobile app"],
   },
   {
-    label: "Realtime / APIs",
+    label: "APIs",
     color: "#a3e635",
     tags: ["socketio", "grpc", "protobuf", "real-time systems", "swagger", "jwt"],
   },
   {
-    label: "SQL / Data",
+    label: "SQL",
     color: "#ef4444",
     tags: [
       "sql",
@@ -226,7 +258,7 @@ const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
     ],
   },
   {
-    label: "C++ / Systems",
+    label: "C++",
     color: "#f34b7d",
     tags: [
       "c++",
@@ -241,7 +273,7 @@ const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
     ],
   },
   {
-    label: "OOP / Patterns",
+    label: "Patterns",
     color: "#c084fc",
     tags: ["oop", "oop architecture", "design patterns", "observer", "mvc"],
   },
@@ -331,6 +363,15 @@ const CLUSTER_CENTERS: Record<ClusterKey, { x: number; y: number }> = {
   data: { x: 1060, y: 585 },
 };
 
+const CLUSTER_ORDER: ClusterKey[] = [
+  "web",
+  "enterprise",
+  "data",
+  "systems",
+  "patterns",
+  "java",
+];
+
 const CLUSTER_ANGLE_OFFSETS: Record<ClusterKey, number> = {
   web: -1.15,
   enterprise: -0.2,
@@ -351,6 +392,10 @@ function hashString(value: string) {
   }
 
   return Math.abs(hash);
+}
+
+function edgePairKey(a: string, b: string) {
+  return a < b ? `${a}--${b}` : `${b}--${a}`;
 }
 
 const TAG_TO_FAMILY_COLOR: Record<string, string> = (() => {
@@ -687,8 +732,6 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
 
   const candidateEdges: Edge[] = [];
   const candidateByPair = new Map<string, Edge>();
-  const pairKey = (a: string, b: string) => (a < b ? `${a}--${b}` : `${b}--${a}`);
-
   for (let i = 0; i < items.length; i++) {
     const aDirectTech = new Set(directTech[i]);
     const aColorTech = new Set(directColorTech[i]);
@@ -733,7 +776,7 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
       };
 
       candidateEdges.push(edge);
-      candidateByPair.set(pairKey(edge.source, edge.target), edge);
+      candidateByPair.set(edgePairKey(edge.source, edge.target), edge);
     }
   }
 
@@ -787,7 +830,7 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
     const present = group.members.filter((m) => titleSet.has(m));
     for (let i = 0; i < present.length; i++) {
       for (let j = i + 1; j < present.length; j++) {
-        const key = pairKey(present[i], present[j]);
+        const key = edgePairKey(present[i], present[j]);
         if (candidateByPair.has(key)) continue;
         const edge: Edge = {
           source: present[i],
@@ -800,6 +843,61 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
         candidateByPair.set(key, edge);
       }
     }
+  }
+
+  const CURATED_PAIRS: {
+    label: string;
+    source: string;
+    target: string;
+    color: string;
+    weight: number;
+  }[] = [
+    {
+      label: "Web frontend",
+      source: "Fragrance E-Commerce",
+      target: "Fast Food Ordering",
+      color: "#61dafb",
+      weight: 1.18,
+    },
+    {
+      label: "Web frontend",
+      source: "Fragrance E-Commerce",
+      target: "Travel Advisory Aggregator",
+      color: "#61dafb",
+      weight: 1.08,
+    },
+    {
+      label: "Web frontend",
+      source: "Fragrance E-Commerce",
+      target: "Debug My Heart",
+      color: "#61dafb",
+      weight: 1.05,
+    },
+    {
+      label: "Web frontend",
+      source: "Fragrance E-Commerce",
+      target: "Real-Time Chat App",
+      color: "#61dafb",
+      weight: 1.02,
+    },
+  ];
+
+  for (const pair of CURATED_PAIRS) {
+    if (!titleSet.has(pair.source) || !titleSet.has(pair.target)) continue;
+
+    const key = edgePairKey(pair.source, pair.target);
+    if (candidateByPair.has(key)) continue;
+
+    const edge: Edge = {
+      source: pair.source,
+      target: pair.target,
+      weight: pair.weight,
+      shared: [pair.label],
+      color: pair.color,
+    };
+
+    curatedEdges.push(edge);
+    candidateByPair.set(key, edge);
   }
 
   let edges: Edge[] = [...candidateEdges, ...curatedEdges];
@@ -840,7 +938,7 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
       findBestNeighbor(node, aDirect, false);
 
     if (best) {
-      const key = pairKey(node.id, best.other.title);
+      const key = edgePairKey(node.id, best.other.title);
       if (!candidateByPair.has(key)) {
         const concrete = best.shared.filter((tech) => !INFERRED_COLOR_TAGS.has(tech));
         const edge: Edge = {
@@ -858,6 +956,18 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
       }
     }
   }
+
+  const uniqueEdgesByPair = new Map<string, Edge>();
+  for (const edge of edges) {
+    const key = edgePairKey(edge.source, edge.target);
+    const existing = uniqueEdgesByPair.get(key);
+
+    if (!existing || edge.weight > existing.weight) {
+      uniqueEdgesByPair.set(key, edge);
+    }
+  }
+
+  edges = Array.from(uniqueEdgesByPair.values());
 
   for (const edge of edges) {
     const sourceNode = nodes.find((node) => node.id === edge.source);
@@ -1107,6 +1217,10 @@ export function ProjectGraph() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [lastViewedId, setLastViewedId] = useState<string>(projects[0].title);
+  const [arrivalGlowById, setArrivalGlowById] = useState<Map<string, ArrivalGlow>>(
+    () => new Map(),
+  );
+  const arrivalGlowTimers = useRef<Map<string, number>>(new Map());
   const shouldReduceMotion = useReducedMotion();
 
   const { nodes, edges } = useMemo(() => {
@@ -1122,6 +1236,47 @@ export function ProjectGraph() {
       setLastViewedId(activeId);
     }
   }, [hoveredId, pinnedId]);
+
+  useEffect(
+    () => () => {
+      for (const timer of arrivalGlowTimers.current.values()) {
+        window.clearTimeout(timer);
+      }
+    },
+    [],
+  );
+
+  const handleTubeArrival = useCallback((nodeId: string) => {
+    const token = window.performance.now();
+
+    setArrivalGlowById((current) => {
+      const next = new Map(current);
+      next.set(nodeId, { token });
+      return next;
+    });
+
+    const existingTimer = arrivalGlowTimers.current.get(nodeId);
+    if (existingTimer) {
+      window.clearTimeout(existingTimer);
+    }
+
+    const timer = window.setTimeout(() => {
+      setArrivalGlowById((current) => {
+        const activeGlow = current.get(nodeId);
+
+        if (!activeGlow || activeGlow.token !== token) {
+          return current;
+        }
+
+        const next = new Map(current);
+        next.delete(nodeId);
+        return next;
+      });
+      arrivalGlowTimers.current.delete(nodeId);
+    }, 1320);
+
+    arrivalGlowTimers.current.set(nodeId, timer);
+  }, []);
 
   const activeId = hoveredId ?? pinnedId;
 
@@ -1168,6 +1323,205 @@ export function ProjectGraph() {
     () => new Map(nodes.map((node) => [node.id, node])),
     [nodes],
   );
+  const nodeAccentById = useMemo(() => {
+    const ranked = new Map<string, { color: string; score: number }>();
+
+    for (const edge of edges) {
+      const score = edge.weight;
+
+      for (const nodeId of [edge.source, edge.target]) {
+        const current = ranked.get(nodeId);
+
+        if (!current || score > current.score) {
+          ranked.set(nodeId, { color: edge.color, score });
+        }
+      }
+    }
+
+    return new Map(
+      Array.from(ranked.entries()).map(([nodeId, value]) => [nodeId, value.color]),
+    );
+  }, [edges]);
+  const activeAccentById = useMemo(() => {
+    const ranked = new Map<string, { color: string; score: number }>();
+
+    if (!activeId) {
+      return new Map<string, string>();
+    }
+
+    for (const edge of edges) {
+      if (edge.source !== activeId && edge.target !== activeId) {
+        continue;
+      }
+
+      const otherId = edge.source === activeId ? edge.target : edge.source;
+      const score = edge.weight;
+
+      for (const nodeId of [activeId, otherId]) {
+        const current = ranked.get(nodeId);
+
+        if (!current || score > current.score) {
+          ranked.set(nodeId, { color: edge.color, score });
+        }
+      }
+    }
+
+    return new Map(
+      Array.from(ranked.entries()).map(([nodeId, value]) => [nodeId, value.color]),
+    );
+  }, [activeId, edges]);
+  const clusterFlows = useMemo(() => {
+    const claimedAnimatedEdges = new Set<string>();
+
+    return CLUSTER_ORDER.flatMap((cluster, index) => {
+      const allRankedEdges = edges
+        .map((edge) => {
+          const source = nodeById.get(edge.source);
+          const target = nodeById.get(edge.target);
+
+          if (!source || !target) {
+            return null;
+          }
+
+          const touchesCluster =
+            source.cluster === cluster || target.cluster === cluster;
+
+          if (!touchesCluster) {
+            return null;
+          }
+
+          const isInternal =
+            source.cluster === cluster && target.cluster === cluster;
+
+          return {
+            edge,
+            source,
+            target,
+            score: edge.weight + (isInternal ? 3 : 0),
+            key: edgePairKey(edge.source, edge.target),
+          };
+        })
+        .filter((item): item is FlowEdgeCandidate => item !== null)
+        .sort((a, b) => b.score - a.score);
+
+      const rankedEdges = allRankedEdges.filter(
+        (item) => !claimedAnimatedEdges.has(item.key),
+      );
+      const best = rankedEdges[0];
+
+      if (!best) {
+        return [];
+      }
+
+      const adjacency = new Map<string, FlowEdgeCandidate[]>();
+
+      for (const item of rankedEdges) {
+        const sourceList = adjacency.get(item.source.id) ?? [];
+        sourceList.push(item);
+        adjacency.set(item.source.id, sourceList);
+
+        const targetList = adjacency.get(item.target.id) ?? [];
+        targetList.push(item);
+        adjacency.set(item.target.id, targetList);
+      }
+
+      let current = best.source.cluster === cluster ? best.source : best.target;
+      let previousNodeId = "";
+      let previousEdgeKey = "";
+      const visitedEdges = new Set<string>();
+      const visitedNodeCount = new Map<string, number>([[current.id, 1]]);
+      const routeLength = rankedEdges.length;
+      const segments: TubeSegment[] = [];
+
+      for (let step = 0; step < routeLength; step++) {
+        const connected = adjacency.get(current.id) ?? [];
+        const edgeScore = (item: FlowEdgeCandidate, from: Node) => {
+          const other = item.source.id === from.id ? item.target : item.source;
+          const nodeVisits = visitedNodeCount.get(other.id) ?? 0;
+          const connectedBonus =
+            item.source.id === from.id || item.target.id === from.id ? 4 : 0;
+
+          return (
+            item.score +
+            connectedBonus +
+            (nodeVisits === 0 ? 5 : -nodeVisits * 3) -
+            (item.key === previousEdgeKey ? 20 : 0) -
+            (other.id === previousNodeId ? 10 : 0)
+          );
+        };
+
+        const connectedFresh = connected.filter(
+          (item) => !visitedEdges.has(item.key) && item.key !== previousEdgeKey,
+        );
+        let chosen = [...connectedFresh].sort(
+          (a, b) => edgeScore(b, current) - edgeScore(a, current),
+        )[0];
+
+        if (!chosen) {
+          const freshGlobal = rankedEdges.filter(
+            (item) => !visitedEdges.has(item.key),
+          );
+
+          chosen = [...freshGlobal].sort((a, b) => {
+            const aTouches =
+              a.source.id === current.id || a.target.id === current.id ? 1 : 0;
+            const bTouches =
+              b.source.id === current.id || b.target.id === current.id ? 1 : 0;
+
+            return bTouches - aTouches || b.score - a.score;
+          })[0];
+        }
+
+        if (!chosen) {
+          break;
+        }
+
+        const connectedToCurrent =
+          chosen.source.id === current.id || chosen.target.id === current.id;
+        const start = connectedToCurrent
+          ? current
+          : chosen.source.cluster === cluster
+            ? chosen.source
+            : chosen.target;
+        const end = chosen.source.id === start.id ? chosen.target : chosen.source;
+        const endpoints = getEdgeEndpoints(start, end);
+
+        segments.push({
+          edge: chosen.edge,
+          startId: start.id,
+          endId: end.id,
+          startNodeX: start.x,
+          startNodeY: start.y,
+          endNodeX: end.x,
+          endNodeY: end.y,
+          x1: endpoints.x1,
+          y1: endpoints.y1,
+          x2: endpoints.x2,
+          y2: endpoints.y2,
+        });
+
+        previousNodeId = start.id;
+        previousEdgeKey = chosen.key;
+        visitedEdges.add(chosen.key);
+        visitedNodeCount.set(end.id, (visitedNodeCount.get(end.id) ?? 0) + 1);
+        current = end;
+      }
+
+      for (const segment of segments) {
+        claimedAnimatedEdges.add(edgePairKey(segment.edge.source, segment.edge.target));
+      }
+
+      return segments.length > 0
+        ? [
+            {
+              cluster,
+              delay: index * 0.24,
+              segments,
+            },
+          ]
+        : [];
+    });
+  }, [edges, nodeById]);
 
   return (
     <motion.div
@@ -1189,10 +1543,6 @@ export function ProjectGraph() {
             <Pin size={9} />
           </span>
           Click to pin
-        </span>
-        <span className="inline-flex items-center gap-2 whitespace-nowrap">
-          <span className="h-px w-6 bg-accent/40" />
-          Related stack / concept
         </span>
         {EDGE_LEGEND.map((item) => (
           <span
@@ -1228,54 +1578,170 @@ export function ProjectGraph() {
             aria-label="Project graph"
             role="img"
           >
+            <defs>
+              <filter
+                id="project-edge-glow"
+                x="-40%"
+                y="-40%"
+                width="180%"
+                height="180%"
+                colorInterpolationFilters="sRGB"
+              >
+                <feGaussianBlur stdDeviation="3.2" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <filter
+                id="project-signal-glow"
+                x="-90%"
+                y="-90%"
+                width="280%"
+                height="280%"
+                colorInterpolationFilters="sRGB"
+              >
+                <feGaussianBlur stdDeviation="4.8" result="signalBlur" />
+                <feMerge>
+                  <feMergeNode in="signalBlur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <filter
+                id="project-node-glow"
+                x="-90%"
+                y="-90%"
+                width="280%"
+                height="280%"
+                colorInterpolationFilters="sRGB"
+              >
+                <feGaussianBlur stdDeviation="7" result="nodeBlur" />
+                <feMerge>
+                  <feMergeNode in="nodeBlur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+            </defs>
             {edges.map((edge) => {
               const source = nodeById.get(edge.source)!;
               const target = nodeById.get(edge.target)!;
               const endpoints = getEdgeEndpoints(source, target);
               const highlight = isEdgeHighlighted(edge);
-              const idleWidth = Math.min(0.72 + edge.weight * 0.3, 1.75);
-              const activeWidth = Math.min(0.95 + edge.weight * 0.42, 2.35);
-              const idleOpacity = shouldReduceMotion ? 0.42 : [0.34, 0.58, 0.38];
+              const edgeId = edgePairKey(edge.source, edge.target);
+              const visualWeight = Math.max(edge.weight, 1.35);
+              const idleWidth = Math.min(1.08 + visualWeight * 0.22, 1.9);
+              const activeWidth = Math.min(1.35 + visualWeight * 0.34, 2.5);
+              const idleOpacity = 0.56;
               const activeOpacity = highlight ? 0.74 : 0.12;
+              const glowOpacity = activeId
+                ? highlight
+                  ? 0.36
+                  : 0.04
+                : 0.34;
 
               return (
-                <motion.line
-                  key={`${edge.source}--${edge.target}`}
-                  x1={endpoints.x1}
-                  y1={endpoints.y1}
-                  x2={endpoints.x2}
-                  y2={endpoints.y2}
-                  stroke={edge.color}
-                  strokeLinecap="round"
-                  animate={{
-                    opacity: activeId ? activeOpacity : idleOpacity,
-                    strokeWidth: activeId
-                      ? (highlight ? activeWidth : 0.55)
-                      : idleWidth,
-                  }}
-                  transition={{
-                    opacity: activeId
-                      ? { duration: 0.22, ease: "easeOut" }
-                      : {
-                          duration: shouldReduceMotion ? 0.01 : 3.2,
-                          repeat: shouldReduceMotion ? 0 : Infinity,
-                          ease: "easeInOut",
-                        },
-                    strokeWidth: {
-                      type: "spring",
-                      stiffness: 240,
-                      damping: 28,
-                    },
-                  }}
+                <g key={edgeId} pointerEvents="none">
+                  <motion.line
+                    x1={endpoints.x1}
+                    y1={endpoints.y1}
+                    x2={endpoints.x2}
+                    y2={endpoints.y2}
+                    stroke={edge.color}
+                    strokeLinecap="round"
+                    filter="url(#project-edge-glow)"
+                    animate={{
+                      opacity: glowOpacity,
+                      strokeWidth: activeId
+                        ? (highlight ? activeWidth + 5.5 : 2.1)
+                        : idleWidth + 4.8,
+                    }}
+                    transition={{
+                      opacity: { duration: shouldReduceMotion ? 0.01 : 0.22, ease: "easeOut" },
+                      strokeWidth: {
+                        type: "spring",
+                        stiffness: 240,
+                        damping: 28,
+                      },
+                    }}
+                  />
+                  <motion.line
+                    x1={endpoints.x1}
+                    y1={endpoints.y1}
+                    x2={endpoints.x2}
+                    y2={endpoints.y2}
+                    stroke={edge.color}
+                    strokeLinecap="round"
+                    animate={{
+                      opacity: activeId ? (highlight ? 0.32 : 0.035) : 0.25,
+                      strokeWidth: activeId
+                        ? (highlight ? activeWidth + 2.7 : 1.2)
+                        : idleWidth + 2.4,
+                    }}
+                    transition={{
+                      opacity: { duration: 0.22, ease: "easeOut" },
+                      strokeWidth: {
+                        type: "spring",
+                        stiffness: 240,
+                        damping: 28,
+                      },
+                    }}
+                  />
+                  <motion.line
+                    x1={endpoints.x1}
+                    y1={endpoints.y1}
+                    x2={endpoints.x2}
+                    y2={endpoints.y2}
+                    stroke={edge.color}
+                    strokeLinecap="round"
+                    animate={{
+                      opacity: activeId ? activeOpacity : idleOpacity,
+                      strokeWidth: activeId
+                        ? (highlight ? activeWidth : 0.55)
+                        : idleWidth,
+                    }}
+                    transition={{
+                      opacity: { duration: shouldReduceMotion ? 0.01 : 0.22, ease: "easeOut" },
+                      strokeWidth: {
+                        type: "spring",
+                        stiffness: 240,
+                        damping: 28,
+                      },
+                    }}
+                  />
+                </g>
+              );
+            })}
+            {clusterFlows.map((flow) => {
+              const hasHighlightedSegment = flow.segments.some((segment) =>
+                isEdgeHighlighted(segment.edge),
+              );
+              const opacityPeak = activeId && !hasHighlightedSegment ? 0.52 : 1;
+
+              return (
+                <GraphTubeFlow
+                  key={flow.cluster}
+                  flow={flow}
+                  opacityPeak={opacityPeak}
+                  shouldReduceMotion={shouldReduceMotion}
+                  onNodeArrive={handleTubeArrival}
                 />
               );
             })}
-            {nodes.map((node, index) => {
+            {nodes.map((node) => {
               const Icon = node.project.icon;
               const focused = activeId === node.id;
+              const arrivalGlow = arrivalGlowById.get(node.id);
+              const arriving = Boolean(arrivalGlow);
               const dim = !isHighlighted(node.id);
               const labelLines = splitLabel(node.project.title);
               const labelY = node.y + NODE_RADIUS + 20;
+              const accentColor =
+                activeAccentById.get(node.id) ??
+                nodeAccentById.get(node.id) ??
+                "#7dd3fc";
+              const glowColor = accentColor;
+              const glowActive = focused;
+              const baseGlowActive = focused || arriving;
 
               return (
                 <motion.g
@@ -1283,19 +1749,12 @@ export function ProjectGraph() {
                   role="button"
                   tabIndex={0}
                   animate={{
-                    opacity: dim ? 0.32 : 1,
-                    scale: focused ? 1.08 : 1,
+                    opacity: dim && !arriving ? 0.32 : 1,
                   }}
                   transition={{
                     opacity: {
                       duration: shouldReduceMotion ? 0.01 : 0.2,
                       ease: "easeOut",
-                    },
-                    scale: {
-                      type: "spring",
-                      stiffness: 320,
-                      damping: 24,
-                      mass: 0.8,
                     },
                   }}
                   style={{
@@ -1327,65 +1786,109 @@ export function ProjectGraph() {
                     fill="transparent"
                     pointerEvents="all"
                   />
-                  {focused && (
+                  {arrivalGlow && (
                     <motion.circle
+                      key={`${node.id}-arrival-outer-${arrivalGlow.token}`}
                       aria-hidden="true"
                       cx={node.x}
                       cy={node.y}
-                      r={NODE_RADIUS + 17}
-                      fill="rgb(125 211 252)"
-                      initial={{ opacity: 0.22, scale: 0.96 }}
-                      animate={{
-                        opacity: shouldReduceMotion ? 0.28 : [0.2, 0.42, 0.2],
-                        scale: shouldReduceMotion ? 1 : [1, 1.18, 1],
-                      }}
-                      transition={{
-                        duration: 2.1,
-                        repeat: shouldReduceMotion ? 0 : Infinity,
-                        ease: "easeInOut",
-                      }}
-                    />
-                  )}
-
-                  {!focused && !dim && (
-                    <motion.circle
-                      aria-hidden="true"
-                      cx={node.x}
-                      cy={node.y}
-                      r={NODE_RADIUS + 7}
-                      fill="rgb(125 211 252)"
-                      opacity={0.1}
+                      fill={glowColor}
+                      filter="url(#project-node-glow)"
+                      initial={{ opacity: 0, r: NODE_RADIUS + 15 }}
                       animate={
                         shouldReduceMotion
-                          ? { opacity: 0.1, scale: 1 }
+                          ? { opacity: 0.26, r: NODE_RADIUS + 28 }
                           : {
-                              opacity: [0.07, 0.18, 0.08],
-                              scale: [1, 1.16, 1],
+                              opacity: [0, 0.34, 0.24, 0],
+                              r: [
+                                NODE_RADIUS + 16,
+                                NODE_RADIUS + 28,
+                                NODE_RADIUS + 34,
+                                NODE_RADIUS + 40,
+                              ],
                             }
                       }
                       transition={{
-                        duration: 2.8 + (index % 5) * 0.28,
-                        repeat: shouldReduceMotion ? 0 : Infinity,
+                        duration: shouldReduceMotion ? 0.01 : 1.18,
+                        times: shouldReduceMotion ? undefined : [0, 0.28, 0.68, 1],
                         ease: "easeInOut",
                       }}
-                      style={{ transformOrigin: `${node.x}px ${node.y}px` }}
                     />
                   )}
+                  {arrivalGlow && (
+                    <motion.circle
+                      key={`${node.id}-arrival-core-${arrivalGlow.token}`}
+                      aria-hidden="true"
+                      cx={node.x}
+                      cy={node.y}
+                      fill={glowColor}
+                      initial={{ opacity: 0, r: NODE_RADIUS + 2 }}
+                      animate={
+                        shouldReduceMotion
+                          ? { opacity: 0.18, r: NODE_RADIUS + 12 }
+                          : {
+                              opacity: [0, 0.2, 0.16, 0],
+                              r: [
+                                NODE_RADIUS + 3,
+                                NODE_RADIUS + 12,
+                                NODE_RADIUS + 16,
+                                NODE_RADIUS + 20,
+                              ],
+                            }
+                      }
+                      transition={{
+                        duration: shouldReduceMotion ? 0.01 : 1.05,
+                        times: shouldReduceMotion ? undefined : [0, 0.22, 0.64, 1],
+                        ease: "easeInOut",
+                      }}
+                    />
+                  )}
+                  <motion.circle
+                    aria-hidden="true"
+                    cx={node.x}
+                    cy={node.y}
+                    r={NODE_RADIUS + 24}
+                    fill={glowColor}
+                    filter="url(#project-node-glow)"
+                    animate={{
+                      opacity: baseGlowActive ? 0.32 : 0,
+                    }}
+                    transition={{
+                      duration: shouldReduceMotion ? 0.01 : 0.55,
+                      ease: "easeInOut",
+                    }}
+                  />
+                  <motion.circle
+                    aria-hidden="true"
+                    cx={node.x}
+                    cy={node.y}
+                    r={NODE_RADIUS + 14}
+                    fill={glowColor}
+                    animate={{
+                      opacity: baseGlowActive ? 0.2 : 0,
+                    }}
+                    transition={{
+                      duration: shouldReduceMotion ? 0.01 : 0.55,
+                      ease: "easeInOut",
+                    }}
+                  />
 
                   <circle
                     cx={node.x}
                     cy={node.y}
                     r={NODE_RADIUS}
-                    fill={focused ? "rgba(125,211,252,0.16)" : "rgba(255,255,255,0.045)"}
-                    stroke={focused ? "rgba(125,211,252,0.78)" : "rgba(255,255,255,0.12)"}
-                    strokeWidth={focused ? 1.5 : 1}
+                    fill={glowActive ? glowColor : "rgba(255,255,255,0.045)"}
+                    fillOpacity={glowActive ? 0.24 : 1}
+                    stroke={glowActive ? glowColor : dim ? "rgba(255,255,255,0.08)" : accentColor}
+                    strokeOpacity={glowActive ? 0.92 : dim ? 1 : 0.42}
+                    strokeWidth={glowActive ? 2 : 1}
                   />
                   <Icon
                     x={node.x - 8.75}
                     y={node.y - 8.75}
                     width={17.5}
                     height={17.5}
-                    color={focused ? "#7dd3fc" : "#d4d4d8"}
+                    color={focused ? accentColor : "#d4d4d8"}
                     strokeWidth={2}
                     aria-hidden="true"
                     pointerEvents="none"
@@ -1426,6 +1929,223 @@ export function ProjectGraph() {
         <PreviewCard project={previewProject} mode={previewMode} />
       </div>
     </motion.div>
+  );
+}
+
+function lerp(start: number, end: number, amount: number) {
+  return start + (end - start) * amount;
+}
+
+function easeInOutSine(amount: number) {
+  return 0.5 - Math.cos(Math.PI * amount) / 2;
+}
+
+function setSvgAttr(
+  element: SVGElement | null,
+  name: string,
+  value: number | string,
+) {
+  if (!element) {
+    return;
+  }
+
+  element.setAttribute(
+    name,
+    typeof value === "number" ? value.toFixed(2) : value,
+  );
+}
+
+function clamp01(value: number) {
+  return Math.min(1, Math.max(0, value));
+}
+
+function setGradientStop(
+  element: SVGStopElement | null,
+  offset: number,
+  opacity: number,
+) {
+  if (!element) {
+    return;
+  }
+
+  element.setAttribute("offset", `${(clamp01(offset) * 100).toFixed(2)}%`);
+  element.setAttribute("stop-opacity", clamp01(opacity).toFixed(3));
+}
+
+function GraphTubeFlow({
+  flow,
+  opacityPeak,
+  shouldReduceMotion,
+  onNodeArrive,
+}: {
+  flow: ClusterFlow;
+  opacityPeak: number;
+  shouldReduceMotion: boolean | null;
+  onNodeArrive: (nodeId: string) => void;
+}) {
+  const reduced = Boolean(shouldReduceMotion);
+  const segmentDuration = reduced ? 3.8 : 1.72;
+  const intensity = reduced ? 0.55 : 1;
+  const gradientId = `project-tube-pressure-${flow.cluster}`;
+  const tubeRef = useRef<SVGLineElement | null>(null);
+  const channelRef = useRef<SVGLineElement | null>(null);
+  const gradientRef = useRef<SVGLinearGradientElement | null>(null);
+  const stop0Ref = useRef<SVGStopElement | null>(null);
+  const stop1Ref = useRef<SVGStopElement | null>(null);
+  const stop2Ref = useRef<SVGStopElement | null>(null);
+  const stop3Ref = useRef<SVGStopElement | null>(null);
+  const stop4Ref = useRef<SVGStopElement | null>(null);
+  const stop5Ref = useRef<SVGStopElement | null>(null);
+  const stop6Ref = useRef<SVGStopElement | null>(null);
+
+  useEffect(() => {
+    let frame = 0;
+    let mounted = true;
+    let lastArrivalKey = "";
+
+    const draw = (time: number) => {
+      if (!mounted) {
+        return;
+      }
+
+      const segments = flow.segments;
+
+      if (segments.length === 0) {
+        return;
+      }
+
+      const elapsedSeconds = time / 1000 - flow.delay;
+      const totalDuration = segmentDuration * segments.length;
+      const absoluteSegmentProgress = elapsedSeconds / segmentDuration;
+      const routeProgress =
+        ((elapsedSeconds % totalDuration) + totalDuration) % totalDuration;
+      const segmentIndex =
+        Math.floor(routeProgress / segmentDuration) % segments.length;
+      const localProgress = (routeProgress % segmentDuration) / segmentDuration;
+      const segment = segments[segmentIndex];
+      const dx = segment.x2 - segment.x1;
+      const dy = segment.y2 - segment.y1;
+      const distance = Math.max(Math.hypot(dx, dy), 1);
+      const eased = easeInOutSine(localProgress);
+      const cx = lerp(segment.x1, segment.x2, eased);
+      const cy = lerp(segment.y1, segment.y2, eased);
+      const pressure = Math.sin(Math.PI * localProgress) * intensity;
+      const center =
+        Math.hypot(cx - segment.x1, cy - segment.y1) / distance;
+      const spread = clamp((22 + pressure * 34) / distance, 0.045, 0.26);
+      const softSpread = clamp(spread * 2.2, 0.09, 0.42);
+      const shoulder = opacityPeak * (0.16 + pressure * 0.28);
+      const peak = opacityPeak * (0.52 + pressure * 0.36);
+      const arrivalKey = `${Math.floor(absoluteSegmentProgress)}-${segment.endId}`;
+
+      if (localProgress > 0.86 && arrivalKey !== lastArrivalKey) {
+        lastArrivalKey = arrivalKey;
+        onNodeArrive(segment.endId);
+      }
+
+      setSvgAttr(gradientRef.current, "x1", segment.x1);
+      setSvgAttr(gradientRef.current, "y1", segment.y1);
+      setSvgAttr(gradientRef.current, "x2", segment.x2);
+      setSvgAttr(gradientRef.current, "y2", segment.y2);
+      setSvgAttr(channelRef.current, "x1", segment.x1);
+      setSvgAttr(channelRef.current, "y1", segment.y1);
+      setSvgAttr(channelRef.current, "x2", segment.x2);
+      setSvgAttr(channelRef.current, "y2", segment.y2);
+      setSvgAttr(channelRef.current, "stroke", segment.edge.color);
+      setSvgAttr(channelRef.current, "opacity", opacityPeak * 0.075);
+      setSvgAttr(tubeRef.current, "stroke-width", 5.4 + pressure * 9.8);
+      setSvgAttr(tubeRef.current, "opacity", opacityPeak * (0.76 + pressure * 0.18));
+      setSvgAttr(tubeRef.current, "x1", segment.x1);
+      setSvgAttr(tubeRef.current, "y1", segment.y1);
+      setSvgAttr(tubeRef.current, "x2", segment.x2);
+      setSvgAttr(tubeRef.current, "y2", segment.y2);
+      setGradientStop(stop0Ref.current, 0, 0);
+      setGradientStop(stop1Ref.current, center - softSpread, 0);
+      setGradientStop(stop2Ref.current, center - spread, shoulder);
+      setGradientStop(stop3Ref.current, center, peak);
+      setGradientStop(stop4Ref.current, center + spread, shoulder);
+      setGradientStop(stop5Ref.current, center + softSpread, 0);
+      setGradientStop(stop6Ref.current, 1, 0);
+      setSvgAttr(stop0Ref.current, "stop-color", segment.edge.color);
+      setSvgAttr(stop1Ref.current, "stop-color", segment.edge.color);
+      setSvgAttr(stop2Ref.current, "stop-color", segment.edge.color);
+      setSvgAttr(stop3Ref.current, "stop-color", segment.edge.color);
+      setSvgAttr(stop4Ref.current, "stop-color", segment.edge.color);
+      setSvgAttr(stop5Ref.current, "stop-color", segment.edge.color);
+      setSvgAttr(stop6Ref.current, "stop-color", segment.edge.color);
+
+      frame = window.requestAnimationFrame(draw);
+    };
+
+    frame = window.requestAnimationFrame(draw);
+
+    return () => {
+      mounted = false;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [
+    flow,
+    intensity,
+    onNodeArrive,
+    opacityPeak,
+    segmentDuration,
+  ]);
+  const firstSegment = flow.segments[0];
+
+  if (!firstSegment) {
+    return null;
+  }
+
+  return (
+    <g
+      data-graph-tube-bulge="true"
+      pointerEvents="none"
+      style={{ mixBlendMode: "screen" }}
+    >
+      <defs>
+        <linearGradient
+          ref={gradientRef}
+          id={gradientId}
+          x1={firstSegment.x1}
+          y1={firstSegment.y1}
+          x2={firstSegment.x2}
+          y2={firstSegment.y2}
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop ref={stop0Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0" />
+          <stop ref={stop1Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0" />
+          <stop ref={stop2Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0.16" />
+          <stop ref={stop3Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0.52" />
+          <stop ref={stop4Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0.16" />
+          <stop ref={stop5Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0" />
+          <stop ref={stop6Ref} offset="100%" stopColor={firstSegment.edge.color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <line
+        ref={channelRef}
+        x1={firstSegment.x1}
+        y1={firstSegment.y1}
+        x2={firstSegment.x2}
+        y2={firstSegment.y2}
+        stroke={firstSegment.edge.color}
+        strokeWidth={3.2}
+        strokeLinecap="round"
+        opacity={opacityPeak * 0.075}
+        filter="url(#project-signal-glow)"
+      />
+      <line
+        ref={tubeRef}
+        x1={firstSegment.x1}
+        y1={firstSegment.y1}
+        x2={firstSegment.x2}
+        y2={firstSegment.y2}
+        stroke={`url(#${gradientId})`}
+        strokeWidth={5.4}
+        strokeLinecap="round"
+        opacity={opacityPeak * 0.72}
+        filter="url(#project-signal-glow)"
+      />
+    </g>
   );
 }
 
