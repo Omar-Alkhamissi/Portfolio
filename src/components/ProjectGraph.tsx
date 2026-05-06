@@ -33,6 +33,7 @@ type Edge = {
   target: string;
   weight: number;
   shared: string[];
+  color: string;
 };
 
 const VIEWBOX_W = 1320;
@@ -109,6 +110,218 @@ const TECH_WEIGHT: Record<string, number> = {
   csvhelper: 0.65,
 };
 
+type EdgeColorFamily = {
+  label: string;
+  color: string;
+  tags: string[];
+};
+
+const EDGE_TAG_COLORS: Record<string, string> = {
+  react: "#61dafb",
+  "react native": "#00d8ff",
+  node: "#68a063",
+  express: "#94a3b8",
+  mongodb: "#13aa52",
+  mui: "#007fff",
+  "vue 3": "#41b883",
+  quasar: "#1976d2",
+  firebase: "#facc15",
+  firestore: "#f59e0b",
+  expo: "#eab308",
+  socketio: "#a3e635",
+  grpc: "#38bdf8",
+  protobuf: "#0ea5e9",
+  swagger: "#84cc16",
+  jwt: "#fb7185",
+  stripe: "#635bff",
+  "asp.net core": "#512bd4",
+  ".net": "#8b5cf6",
+  ".net 8": "#7c3aed",
+  ".net 9": "#a855f7",
+  "ef core": "#14b8a6",
+  "c#": "#178600",
+  xunit: "#22c55e",
+  "github actions": "#2088ff",
+  sql: "#ef4444",
+  "sql server": "#dc2626",
+  "t-sql": "#f97316",
+  "stored procedures": "#f59e0b",
+  postgresql: "#336791",
+  plpgsql: "#3f7fbf",
+  sqlite: "#0f80cc",
+  "c++": "#f34b7d",
+  stl: "#fb7185",
+  templates: "#ec4899",
+  raii: "#db2777",
+  shared_ptr: "#be185d",
+  "recursive parsing": "#38bdf8",
+  "data structures": "#fb923c",
+  java: "#b07219",
+  swing: "#d97706",
+  oop: "#c084fc",
+  observer: "#d8b4fe",
+  mvc: "#f0abfc",
+  "design patterns": "#a78bfa",
+  csvhelper: "#14b8a6",
+  xpath: "#f97316",
+  xml: "#fb923c",
+  "json schema": "#facc15",
+  unity: "#e5e7eb",
+  "frontend app": "#38bdf8",
+  "backend api": "#60a5fa",
+  "mobile app": "#facc15",
+  "javascript ecosystem": "#f1e05a",
+  "csharp ecosystem": "#22c55e",
+  "java ecosystem": "#b07219",
+  "relational data": "#ef4444",
+  "database systems": "#dc2626",
+  "data modeling": "#f97316",
+  "oop architecture": "#c084fc",
+  "systems programming": "#f34b7d",
+  "compiler pipeline": "#f43f5e",
+  "real-time systems": "#a3e635",
+};
+
+const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
+  {
+    label: "React / Web",
+    color: "#61dafb",
+    tags: [
+      "react",
+      "node",
+      "express",
+      "mongodb",
+      "mui",
+      "vue 3",
+      "quasar",
+      "frontend app",
+      "javascript ecosystem",
+    ],
+  },
+  {
+    label: "Mobile / Firebase",
+    color: "#facc15",
+    tags: ["react native", "expo", "firebase", "firestore", "mobile app"],
+  },
+  {
+    label: "Realtime / APIs",
+    color: "#a3e635",
+    tags: ["socketio", "grpc", "protobuf", "real-time systems", "swagger", "jwt"],
+  },
+  {
+    label: "SQL / Data",
+    color: "#ef4444",
+    tags: [
+      "sql",
+      "sql server",
+      "t-sql",
+      "stored procedures",
+      "postgresql",
+      "plpgsql",
+      "sqlite",
+      "relational data",
+      "database systems",
+      "data modeling",
+      "etl",
+    ],
+  },
+  {
+    label: "C++ / Systems",
+    color: "#f34b7d",
+    tags: [
+      "c++",
+      "stl",
+      "templates",
+      "raii",
+      "shared_ptr",
+      "systems programming",
+      "compiler pipeline",
+      "recursive parsing",
+      "data structures",
+    ],
+  },
+  {
+    label: "OOP / Patterns",
+    color: "#c084fc",
+    tags: ["oop", "oop architecture", "design patterns", "observer", "mvc"],
+  },
+  {
+    label: "Java",
+    color: "#b07219",
+    tags: ["java", "swing", "java ecosystem"],
+  },
+  {
+    label: "C# / .NET",
+    color: "#7c3aed",
+    tags: [
+      "c#",
+      ".net",
+      ".net 8",
+      ".net 9",
+      "asp.net core",
+      "ef core",
+      "xunit",
+      "csharp ecosystem",
+    ],
+  },
+];
+
+const INFERRED_COLOR_TAGS = new Set([
+  "frontend app",
+  "backend api",
+  "mobile app",
+  "javascript ecosystem",
+  "csharp ecosystem",
+  "java ecosystem",
+  "relational data",
+  "database systems",
+  "data modeling",
+  "oop architecture",
+  "systems programming",
+  "compiler pipeline",
+  "real-time systems",
+]);
+
+const GENERIC_COLOR_TAGS = new Set([
+  ".net",
+  ".net 8",
+  ".net 9",
+  "sql",
+  "oop",
+  "frontend app",
+  "backend api",
+  "javascript ecosystem",
+  "csharp ecosystem",
+  "java ecosystem",
+  "relational data",
+  "database systems",
+  "data modeling",
+  "oop architecture",
+  "systems programming",
+  "compiler pipeline",
+  "real-time systems",
+]);
+
+const DEFAULT_EDGE_COLORS = [
+  "#7dd3fc",
+  "#34d399",
+  "#fbbf24",
+  "#f472b6",
+  "#a78bfa",
+  "#fb7185",
+];
+
+const EDGE_LEGEND = [
+  EDGE_COLOR_FAMILIES[0],
+  EDGE_COLOR_FAMILIES[7],
+  EDGE_COLOR_FAMILIES[3],
+  EDGE_COLOR_FAMILIES[1],
+  EDGE_COLOR_FAMILIES[2],
+  EDGE_COLOR_FAMILIES[5],
+  EDGE_COLOR_FAMILIES[6],
+  EDGE_COLOR_FAMILIES[4],
+];
+
 const CLUSTER_CENTERS: Record<ClusterKey, { x: number; y: number }> = {
   web: { x: 255, y: 240 },
   enterprise: { x: 655, y: 235 },
@@ -128,6 +341,46 @@ const CLUSTER_ANGLE_OFFSETS: Record<ClusterKey, number> = {
 };
 
 const weightOf = (tech: string) => TECH_WEIGHT[tech] ?? 0.4;
+
+function hashString(value: string) {
+  let hash = 0;
+
+  for (let i = 0; i < value.length; i++) {
+    hash = (hash << 5) - hash + value.charCodeAt(i);
+    hash |= 0;
+  }
+
+  return Math.abs(hash);
+}
+
+function edgeColorForShared(shared: string[], frequency: Map<string, number>) {
+  const rankedTags = shared
+    .filter((tech) => EDGE_TAG_COLORS[tech])
+    .map((tech, index) => {
+      const rarity = 1 / Math.sqrt(frequency.get(tech) ?? 1);
+      const specificity = GENERIC_COLOR_TAGS.has(tech) ? 0 : 1.4;
+      const score = specificity + weightOf(tech) * 1.55 + rarity;
+
+      return {
+        color: EDGE_TAG_COLORS[tech],
+        index,
+        score,
+      };
+    })
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+
+  if (rankedTags[0]) {
+    return rankedTags[0].color;
+  }
+
+  const fallbackIndex = hashString(shared.join("|")) % DEFAULT_EDGE_COLORS.length;
+  return DEFAULT_EDGE_COLORS[fallbackIndex];
+}
+
+function fallbackEdgeColor(source: string, target: string) {
+  const fallbackIndex = hashString(`${source}--${target}`) % DEFAULT_EDGE_COLORS.length;
+  return DEFAULT_EDGE_COLORS[fallbackIndex];
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
@@ -398,11 +651,18 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
     };
   });
 
-  const expandedTech = items.map((project) =>
+  const directTech = items.map((project) =>
+    Array.from(new Set(project.tech.flatMap((tech) => expandTechTags(tech)))),
+  );
+  const relationshipTech = items.map((project) => inferRelationshipTags(project));
+  const directColorTech = directTech.map((tags) =>
+    tags.filter((tech) => !INFERRED_COLOR_TAGS.has(tech)),
+  );
+  const expandedTech = items.map((_, index) =>
     Array.from(
       new Set([
-        ...project.tech.flatMap((tech) => expandTechTags(tech)),
-        ...inferRelationshipTags(project),
+        ...directTech[index],
+        ...relationshipTech[index],
       ]),
     ),
   );
@@ -417,14 +677,27 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
   const candidateEdges: Edge[] = [];
 
   for (let i = 0; i < items.length; i++) {
-    const aTech = new Set(expandedTech[i]);
+    const aDirectTech = new Set(directTech[i]);
+    const aRelationshipTech = new Set(relationshipTech[i]);
+    const aColorTech = new Set(directColorTech[i]);
 
     for (let j = i + 1; j < items.length; j++) {
-      const shared = expandedTech[j].filter((tech) => aTech.has(tech));
+      const directShared = directTech[j].filter((tech) => aDirectTech.has(tech));
+      const relationshipShared = relationshipTech[j].filter((tech) =>
+        aRelationshipTech.has(tech),
+      );
+      const shared = Array.from(new Set([...directShared, ...relationshipShared]));
+      const directColorShared = directColorTech[j].filter((tech) =>
+        aColorTech.has(tech),
+      );
+      const concreteShared =
+        directColorShared.length > 0
+          ? directColorShared
+          : directShared.filter((tech) => !INFERRED_COLOR_TAGS.has(tech));
 
-      if (shared.length > 0) {
+      if (directShared.length > 0) {
         const weight = scoreSharedTech(shared, techFrequency);
-        const meaningfulShared = shared.filter((tech) => weightOf(tech) >= 0.5);
+        const meaningfulShared = directShared.filter((tech) => weightOf(tech) >= 0.5);
 
         if (weight < 0.42 || meaningfulShared.length === 0) {
           continue;
@@ -435,6 +708,10 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
           target: items[j].title,
           weight,
           shared,
+          color:
+            concreteShared.length > 0
+              ? edgeColorForShared(concreteShared, techFrequency)
+              : fallbackEdgeColor(items[i].title, items[j].title),
         });
       }
     }
@@ -796,23 +1073,38 @@ export function ProjectGraph() {
       transition={{ duration: 0.5, ease: "easeOut" }}
       className="mx-auto max-w-[1280px]"
     >
-      <div className="mb-4 flex flex-wrap items-center justify-center gap-4 font-mono text-[11px] text-zinc-500 xl:justify-start">
-        <span className="inline-flex items-center gap-2">
+      <div className="mb-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 font-mono text-[11px] text-zinc-500 xl:justify-start">
+        <span className="inline-flex items-center gap-2 whitespace-nowrap">
           <span className="grid h-4 w-4 place-items-center rounded-md border border-accent/40 bg-accent/10 text-accent">
             <MousePointer2 size={9} />
           </span>
           Hover a node
         </span>
-        <span className="inline-flex items-center gap-2">
+        <span className="inline-flex items-center gap-2 whitespace-nowrap">
           <span className="grid h-4 w-4 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300">
             <Pin size={9} />
           </span>
           Click to pin
         </span>
-        <span className="inline-flex items-center gap-2">
+        <span className="inline-flex items-center gap-2 whitespace-nowrap">
           <span className="h-px w-6 bg-accent/40" />
           Related stack / concept
         </span>
+        {EDGE_LEGEND.map((item) => (
+          <span
+            key={item.label}
+            className="inline-flex items-center gap-2 whitespace-nowrap text-zinc-400"
+          >
+            <span
+              className="h-1.5 w-6 rounded-full shadow-[0_0_12px_currentColor]"
+              style={{
+                backgroundColor: item.color,
+                color: item.color,
+              }}
+            />
+            {item.label}
+          </span>
+        ))}
       </div>
 
       <div className="glass relative overflow-hidden p-3 sm:p-5 md:p-6">
@@ -839,7 +1131,7 @@ export function ProjectGraph() {
               const highlight = isEdgeHighlighted(edge);
               const idleWidth = Math.min(0.72 + edge.weight * 0.3, 1.75);
               const activeWidth = Math.min(0.95 + edge.weight * 0.42, 2.35);
-              const idleOpacity = 0.38;
+              const idleOpacity = shouldReduceMotion ? 0.42 : [0.34, 0.58, 0.38];
               const activeOpacity = highlight ? 0.74 : 0.12;
 
               return (
@@ -849,7 +1141,8 @@ export function ProjectGraph() {
                   y1={endpoints.y1}
                   x2={endpoints.x2}
                   y2={endpoints.y2}
-                  stroke="rgb(125 211 252)"
+                  stroke={edge.color}
+                  strokeLinecap="round"
                   animate={{
                     opacity: activeId ? activeOpacity : idleOpacity,
                     strokeWidth: activeId
@@ -857,7 +1150,13 @@ export function ProjectGraph() {
                       : idleWidth,
                   }}
                   transition={{
-                    opacity: { duration: shouldReduceMotion ? 0.01 : 0.22, ease: "easeOut" },
+                    opacity: activeId
+                      ? { duration: 0.22, ease: "easeOut" }
+                      : {
+                          duration: shouldReduceMotion ? 0.01 : 3.2,
+                          repeat: shouldReduceMotion ? 0 : Infinity,
+                          ease: "easeInOut",
+                        },
                     strokeWidth: {
                       type: "spring",
                       stiffness: 240,
@@ -867,7 +1166,7 @@ export function ProjectGraph() {
                 />
               );
             })}
-            {nodes.map((node) => {
+            {nodes.map((node, index) => {
               const Icon = node.project.icon;
               const focused = activeId === node.id;
               const dim = !isHighlighted(node.id);
@@ -945,13 +1244,27 @@ export function ProjectGraph() {
                   )}
 
                   {!focused && !dim && (
-                    <circle
+                    <motion.circle
                       aria-hidden="true"
                       cx={node.x}
                       cy={node.y}
                       r={NODE_RADIUS + 7}
                       fill="rgb(125 211 252)"
-                      opacity={0.08}
+                      opacity={0.1}
+                      animate={
+                        shouldReduceMotion
+                          ? { opacity: 0.1, scale: 1 }
+                          : {
+                              opacity: [0.07, 0.18, 0.08],
+                              scale: [1, 1.16, 1],
+                            }
+                      }
+                      transition={{
+                        duration: 2.8 + (index % 5) * 0.28,
+                        repeat: shouldReduceMotion ? 0 : Infinity,
+                        ease: "easeInOut",
+                      }}
+                      style={{ transformOrigin: `${node.x}px ${node.y}px` }}
                     />
                   )}
 
