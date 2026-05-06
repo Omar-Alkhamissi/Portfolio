@@ -839,7 +839,7 @@ export function ProjectGraph() {
               const highlight = isEdgeHighlighted(edge);
               const idleWidth = Math.min(0.72 + edge.weight * 0.3, 1.75);
               const activeWidth = Math.min(0.95 + edge.weight * 0.42, 2.35);
-              const idleOpacity = shouldReduceMotion ? 0.42 : [0.34, 0.58, 0.38];
+              const idleOpacity = 0.38;
               const activeOpacity = highlight ? 0.74 : 0.12;
 
               return (
@@ -857,13 +857,7 @@ export function ProjectGraph() {
                       : idleWidth,
                   }}
                   transition={{
-                    opacity: activeId
-                      ? { duration: 0.22, ease: "easeOut" }
-                      : {
-                          duration: shouldReduceMotion ? 0.01 : 3.2,
-                          repeat: shouldReduceMotion ? 0 : Infinity,
-                          ease: "easeInOut",
-                        },
+                    opacity: { duration: shouldReduceMotion ? 0.01 : 0.22, ease: "easeOut" },
                     strokeWidth: {
                       type: "spring",
                       stiffness: 240,
@@ -873,7 +867,7 @@ export function ProjectGraph() {
                 />
               );
             })}
-            {nodes.map((node, index) => {
+            {nodes.map((node) => {
               const Icon = node.project.icon;
               const focused = activeId === node.id;
               const dim = !isHighlighted(node.id);
@@ -951,27 +945,13 @@ export function ProjectGraph() {
                   )}
 
                   {!focused && !dim && (
-                    <motion.circle
+                    <circle
                       aria-hidden="true"
                       cx={node.x}
                       cy={node.y}
                       r={NODE_RADIUS + 7}
                       fill="rgb(125 211 252)"
-                      opacity={0.1}
-                      animate={
-                        shouldReduceMotion
-                          ? { opacity: 0.1, scale: 1 }
-                          : {
-                              opacity: [0.07, 0.18, 0.08],
-                              scale: [1, 1.16, 1],
-                            }
-                      }
-                      transition={{
-                        duration: 2.8 + (index % 5) * 0.28,
-                        repeat: shouldReduceMotion ? 0 : Infinity,
-                        ease: "easeInOut",
-                      }}
-                      style={{ transformOrigin: `${node.x}px ${node.y}px` }}
+                      opacity={0.08}
                     />
                   )}
 

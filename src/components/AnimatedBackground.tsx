@@ -90,6 +90,7 @@ export function AnimatedBackground() {
 
     let frameId = 0;
     let last = performance.now();
+
     const draw = (now: number) => {
       const dt = Math.min((now - last) / 16.6667, 2); // delta in 60fps frames, clamp
       last = now;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -59,7 +59,7 @@ const RING_BASE = 164;
 const RING_STEP = 76;
 
 // Outer rings still move slower, but the cadence is fast enough to be visible.
-const periodFor = (i: number) => 18 + i * 8;
+const periodFor = (i: number) => 14 + i * 6;
 const directionFor = (i: number) => (i % 2 === 0 ? 1 : -1);
 
 const GROUP_ACCENTS: Record<string, string> = {
@@ -148,10 +148,33 @@ function buildPositions(groups: SkillGroup[]): PlanetPosition[] {
 export function SolarSystem() {
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [systemEntered, setSystemEntered] = useState(false);
-  const [orbitTime, setOrbitTime] = useState(0);
   const orbitStartRef = useRef<number | null>(null);
+  const planetRefs = useRef(new Map<string, SVGGElement>());
+  const labelRefs = useRef(new Map<string, SVGTextElement>());
   const shouldReduceMotion = useReducedMotion();
   const positions = useMemo(() => buildPositions(skillGroups), []);
+
+  const setPlanetRef = useCallback(
+    (key: string) => (node: SVGGElement | null) => {
+      if (node) {
+        planetRefs.current.set(key, node);
+      } else {
+        planetRefs.current.delete(key);
+      }
+    },
+    [],
+  );
+
+  const setLabelRef = useCallback(
+    (key: string) => (node: SVGTextElement | null) => {
+      if (node) {
+        labelRefs.current.set(key, node);
+      } else {
+        labelRefs.current.delete(key);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!systemEntered) {
@@ -163,14 +186,37 @@ export function SolarSystem() {
     const tick = (now: number) => {
       orbitStartRef.current ??= now;
       const elapsed = (now - orbitStartRef.current) / 1000;
-      setOrbitTime(shouldReduceMotion ? elapsed * 0.25 : elapsed);
+
+      for (const p of positions) {
+        const direction = directionFor(p.groupIndex);
+        const orbitTime = shouldReduceMotion ? elapsed * 0.25 : elapsed;
+        const orbitAngle =
+          startAngleFor(p.groupIndex) +
+          (p.skillIndex / p.total) * Math.PI * 2 +
+          direction * ((orbitTime / p.rotationPeriod) * Math.PI * 2);
+        const cx = CENTER + p.ringRadius * Math.cos(orbitAngle);
+        const cy = CENTER + p.ringRadius * Math.sin(orbitAngle);
+        const labelRadius = p.ringRadius + 36;
+        const labelOffsetX = (labelRadius - p.ringRadius) * Math.cos(orbitAngle);
+        const labelOffsetY =
+          (labelRadius - p.ringRadius) * Math.sin(orbitAngle) + 4;
+        const key = `${p.group.id}::${p.skill}`;
+
+        planetRefs.current
+          .get(key)
+          ?.setAttribute("transform", `translate(${cx.toFixed(2)} ${cy.toFixed(2)})`);
+        const label = labelRefs.current.get(key);
+        label?.setAttribute("x", labelOffsetX.toFixed(2));
+        label?.setAttribute("y", labelOffsetY.toFixed(2));
+      }
+
       frame = window.requestAnimationFrame(tick);
     };
 
     frame = window.requestAnimationFrame(tick);
 
     return () => window.cancelAnimationFrame(frame);
-  }, [shouldReduceMotion, systemEntered]);
+  }, [positions, shouldReduceMotion, systemEntered]);
 
   return (
     <motion.div
@@ -266,13 +312,7 @@ export function SolarSystem() {
                   initial={{ r: 0, opacity: 0 }}
                   animate={{
                     r: systemEntered ? r : 0,
-                    opacity: systemEntered
-                      ? isActive
-                        ? shouldReduceMotion
-                          ? 0.12
-                          : [0.08, 0.15, 0.09]
-                        : 0.025
-                      : 0,
+                    opacity: systemEntered ? (isActive ? 0.1 : 0.025) : 0,
                   }}
                   transition={{
                     r: {
@@ -280,11 +320,7 @@ export function SolarSystem() {
                       delay: shouldReduceMotion ? 0 : i * 0.06,
                       ease: [0.22, 1, 0.36, 1],
                     },
-                    opacity: {
-                      duration: shouldReduceMotion ? 0.01 : 5.2 + i * 0.35,
-                      repeat: shouldReduceMotion ? 0 : Infinity,
-                      ease: "easeInOut",
-                    },
+                    opacity: { duration: 0.25, ease: "easeOut" },
                   }}
                   fill="none"
                   stroke={accent}
@@ -319,7 +355,6 @@ export function SolarSystem() {
           {/* Rotating ring groups — each orbits at its own speed */}
           {skillGroups.map((g, gi) => {
             const isActive = activeGroup === null || activeGroup === g.id;
-            const direction = directionFor(gi);
             const accent = GROUP_ACCENTS[g.id] ?? "#7dd3fc";
             return (
               <g
@@ -332,21 +367,22 @@ export function SolarSystem() {
                 {positions
                   .filter((p) => p.group.id === g.id)
                   .map((p) => {
-                    const orbitAngle =
+                    const initialAngle =
                       startAngleFor(p.groupIndex) +
-                      (p.skillIndex / p.total) * Math.PI * 2 +
-                      direction * ((orbitTime / p.rotationPeriod) * Math.PI * 2);
-                    const cx = CENTER + p.ringRadius * Math.cos(orbitAngle);
-                    const cy = CENTER + p.ringRadius * Math.sin(orbitAngle);
+                      (p.skillIndex / p.total) * Math.PI * 2;
+                    const cx = CENTER + p.ringRadius * Math.cos(initialAngle);
+                    const cy = CENTER + p.ringRadius * Math.sin(initialAngle);
                     const labelRadius = p.ringRadius + 36;
-                    const labelX = CENTER + labelRadius * Math.cos(orbitAngle);
-                    const labelY = CENTER + labelRadius * Math.sin(orbitAngle) + 4;
-                    const labelOffsetX = labelX - cx;
-                    const labelOffsetY = labelY - cy;
+                    const labelOffsetX =
+                      (labelRadius - p.ringRadius) * Math.cos(initialAngle);
+                    const labelOffsetY =
+                      (labelRadius - p.ringRadius) * Math.sin(initialAngle) + 4;
                     const Icon = SKILL_ICONS[p.skill] ?? Globe;
+                    const key = `${g.id}::${p.skill}`;
                     return (
                       <g
-                        key={`${g.id}::${p.skill}`}
+                        key={key}
+                        ref={setPlanetRef(key)}
                         opacity={systemEntered ? 1 : 0}
                         transform={`translate(${cx} ${cy})`}
                         style={{
@@ -381,6 +417,7 @@ export function SolarSystem() {
                             strokeWidth={2}
                           />
                           <text
+                            ref={setLabelRef(key)}
                             x={labelOffsetX}
                             y={labelOffsetY}
                             textAnchor="middle"
