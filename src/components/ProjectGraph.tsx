@@ -56,11 +56,30 @@ type FlowEdgeCandidate = {
   key: string;
 };
 
-type ArrivalGlow = {
+type ArrivalBloom = {
   token: number;
+  color: string;
+};
+
+type NodeArrival = {
+  nodeId: string;
+  color: string;
 };
 
 type LivePosition = { x: number; y: number };
+
+type EdgeEndpoints = {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
+
+type EdgeLineRefs = {
+  glow: SVGLineElement | null;
+  soft: SVGLineElement | null;
+  core: SVGLineElement | null;
+};
 
 const VIEWBOX_W = 1320;
 const VIEWBOX_H = 860;
@@ -73,17 +92,17 @@ const LABEL_GAP = 12;
 
 // ─── Animation tuning ────────────────────────────────────────────────────────
 // Wave (pressure / "water in a vein") — duration of one segment traversal.
-const WAVE_SEGMENT_DURATION = 1.65;
+const WAVE_SEGMENT_DURATION = 1.55;
 const WAVE_SEGMENT_DURATION_REDUCED = 3.6;
 // How much the wave bleeds into the adjacent segment around node junctions.
 // Expressed as a fraction of one segment duration.
-const WAVE_HANDOFF_OVERLAP = 0.22;
+const WAVE_HANDOFF_OVERLAP = 0.12;
 // Bell-curve thickness — "spread" is the high-intensity core, "soft" is
 // the gentle outer falloff. Both expressed as a fraction of segment length.
 // A wider soft spread reads as a longer, more watery wave; tighter feels
 // like an electric pulse.
-const WAVE_SPREAD = 0.09;
-const WAVE_SOFT_SPREAD = 0.42;
+const WAVE_SPREAD = 0.035;
+const WAVE_SOFT_SPREAD = 0.16;
 // Blend factor between pure linear motion (0) and a full pendulum / smoothstep
 // (1). At 0 the wave reverses direction instantaneously at terminals. At 1
 // it slows to a stop and accelerates back, but the middle of each traversal
@@ -92,25 +111,25 @@ const WAVE_SOFT_SPREAD = 0.42;
 // velocity reversal at terminals is graceful instead of a hard flip.
 const WAVE_BOUNCE_EASE = 0.18;
 // Peak opacity of the brightest stop in the gradient (0–1).
-const WAVE_PEAK_OPACITY = 0.74;
+const WAVE_PEAK_OPACITY = 0.84;
 // Stroke width range for the active wave line.
-const WAVE_STROKE_BASE = 5.0;
-const WAVE_STROKE_PEAK = 13.6;
+const WAVE_STROKE_BASE = 4.2;
+const WAVE_STROKE_PEAK = 9.8;
 // Ambient channel glow under the wave path. Kept low so inactive lines are
 // not drowned out — set to 0 to fully match inactive edge brightness.
-const WAVE_CHANNEL_OPACITY = 0.045;
-// Glow bloom — three concentric rings (core, mid, halo) that expand and
-// fade like an Apple-style ping. Each ring has its own duration so they
-// don't all peak at the same instant — that staggered breathing is what
-// makes it feel organic instead of stamped.
-const GLOW_BLOOM_DURATION_CORE = 0.95;   // bright pop right at the node
-const GLOW_BLOOM_DURATION_MID = 1.35;    // medium ripple
-const GLOW_BLOOM_DURATION_HALO = 1.7;    // far, soft, slow
-const GLOW_BLOOM_DURATION_REDUCED = 0.01;
-// `expo-out` cubic-bezier — Apple/iOS, Webflow, and Stripe all use this
-// curve for "premium" reveals. Fast initial expansion that gracefully
-// settles, exactly the bloom shape we want.
-const GLOW_EASE_EXPO_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
+const WAVE_CHANNEL_OPACITY = 0.018;
+// Badge bloom — an internal fill that grows inside the badge instead of
+// throwing rings outside it.
+const BADGE_BLOOM_DURATION = 4.4;
+const BADGE_BLOOM_FACE_OPACITY = 0.68;
+const BADGE_BLOOM_PEAK_OPACITY = 0.88;
+const BADGE_BLOOM_CORE_OPACITY = 0.3;
+const BADGE_BLOOM_RAMP_PORTION = 0.7;
+const BADGE_BLOOM_HOLD_PORTION = 0.1;
+// Used only for small hover/focus glow. The arrival bloom uses slower
+// in-out curves below so it doesn't front-load into a flash.
+const BLOOM_EASE_EXPO_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
+const BLOOM_EASE_SLOW_IN_OUT: [number, number, number, number] = [0.45, 0, 0.2, 1];
 // Drag — how many viewport units the pointer must travel before a drag is
 // detected. Below this threshold we treat pointer-up as a click (pin toggle).
 const DRAG_THRESHOLD = 4;
@@ -1169,7 +1188,7 @@ function runLayout(nodes: Node[], edges: Edge[], ticks = 220) {
   resolveFootprintOverlaps(nodes);
 }
 
-function getEdgeEndpoints(source: Node, target: Node) {
+function getEdgeEndpoints(source: LivePosition, target: LivePosition): EdgeEndpoints {
   const dx = target.x - source.x;
   const dy = target.y - source.y;
   const distance = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -1182,6 +1201,20 @@ function getEdgeEndpoints(source: Node, target: Node) {
     x2: target.x - nx * LINE_GAP,
     y2: target.y - ny * LINE_GAP,
   };
+}
+
+function setLineEndpoints(
+  element: SVGLineElement | null,
+  endpoints: EdgeEndpoints,
+) {
+  setSvgAttr(element, "x1", endpoints.x1);
+  setSvgAttr(element, "y1", endpoints.y1);
+  setSvgAttr(element, "x2", endpoints.x2);
+  setSvgAttr(element, "y2", endpoints.y2);
+}
+
+function toSvgId(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 function splitLabel(title: string) {
@@ -1255,7 +1288,7 @@ export function ProjectGraph() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [lastViewedId, setLastViewedId] = useState<string>(projects[0].title);
-  const [arrivalGlowById, setArrivalGlowById] = useState<Map<string, ArrivalGlow>>(
+  const [arrivalBloomById, setArrivalBloomById] = useState<Map<string, ArrivalBloom>>(
     () => new Map(),
   );
   // Drag overrides for project nodes. Sparse — only contains entries for
@@ -1264,12 +1297,31 @@ export function ProjectGraph() {
     () => new Map(),
   );
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const arrivalGlowTimers = useRef<Map<string, number>>(new Map());
+  const arrivalBloomTimers = useRef<Map<string, number>>(new Map());
   const shouldReduceMotion = useReducedMotion();
   // Ref consumed by GraphTubeFlow rAF loop so the wave reads up-to-the-frame
   // node coordinates without forcing the flow component to re-render.
   const livePositionsRef = useRef<Map<string, LivePosition>>(new Map());
+  const nodeVisualRefs = useRef<Map<string, SVGGElement>>(new Map());
+  const edgeLineRefs = useRef<Map<string, EdgeLineRefs>>(new Map());
   const svgRef = useRef<SVGSVGElement | null>(null);
+  // ─── Drag system ──────────────────────────────────────────────────────────
+  // Pointer events drive one live coordinate source. During active drag we
+  // write directly to the SVG node group and relation-line attributes, then
+  // commit the same coordinate to React state for the settled render.
+  const dragStateRef = useRef<{
+    nodeId: string;
+    pointerId: number;
+    // Pointer coordinates at drag start, in SVG viewport units.
+    startSvgX: number;
+    startSvgY: number;
+    // Node coordinates at drag start.
+    startNodeX: number;
+    startNodeY: number;
+    moved: boolean;
+    pending: { x: number; y: number } | null;
+    inverseCtm: DOMMatrix | null;
+  } | null>(null);
 
   const { nodes, edges } = useMemo(() => {
     const graph = buildGraph(projects);
@@ -1291,12 +1343,17 @@ export function ProjectGraph() {
     [nodes, draggedPositions],
   );
 
-  // Keep the ref in sync so rAF readers always see the latest positions,
-  // both during a drag (state updates flush per frame) and after.
+  // Keep the ref in sync so rAF readers always see the latest positions.
+  // While a pointer drag is active, preserve the directly-written coordinate
+  // because React may render before the coalesced state commit lands.
   {
+    const previous = livePositionsRef.current;
+    const activeDragId = dragStateRef.current?.nodeId ?? null;
     const fresh = new Map<string, LivePosition>();
     for (const node of liveNodes) {
-      fresh.set(node.id, { x: node.x, y: node.y });
+      const liveDragPosition =
+        activeDragId === node.id ? previous.get(node.id) : null;
+      fresh.set(node.id, liveDragPosition ?? { x: node.x, y: node.y });
     }
     livePositionsRef.current = fresh;
   }
@@ -1311,43 +1368,46 @@ export function ProjectGraph() {
 
   useEffect(
     () => () => {
-      for (const timer of arrivalGlowTimers.current.values()) {
+      for (const timer of arrivalBloomTimers.current.values()) {
         window.clearTimeout(timer);
       }
     },
     [],
   );
 
-  const handleTubeArrival = useCallback((nodeId: string) => {
+  const handleTubeArrival = useCallback((arrival: NodeArrival) => {
     const token = window.performance.now();
 
-    setArrivalGlowById((current) => {
+    setArrivalBloomById((current) => {
       const next = new Map(current);
-      next.set(nodeId, { token });
+      next.set(arrival.nodeId, {
+        token,
+        color: arrival.color,
+      });
       return next;
     });
 
-    const existingTimer = arrivalGlowTimers.current.get(nodeId);
+    const existingTimer = arrivalBloomTimers.current.get(arrival.nodeId);
     if (existingTimer) {
       window.clearTimeout(existingTimer);
     }
 
     const timer = window.setTimeout(() => {
-      setArrivalGlowById((current) => {
-        const activeGlow = current.get(nodeId);
+      setArrivalBloomById((current) => {
+        const activeBloom = current.get(arrival.nodeId);
 
-        if (!activeGlow || activeGlow.token !== token) {
+        if (!activeBloom || activeBloom.token !== token) {
           return current;
         }
 
         const next = new Map(current);
-        next.delete(nodeId);
+        next.delete(arrival.nodeId);
         return next;
       });
-      arrivalGlowTimers.current.delete(nodeId);
-    }, 1320);
+      arrivalBloomTimers.current.delete(arrival.nodeId);
+    }, BADGE_BLOOM_DURATION * 1000 + 140);
 
-    arrivalGlowTimers.current.set(nodeId, timer);
+    arrivalBloomTimers.current.set(arrival.nodeId, timer);
   }, []);
 
   const activeId = hoveredId ?? pinnedId;
@@ -1451,27 +1511,6 @@ export function ProjectGraph() {
       Array.from(ranked.entries()).map(([nodeId, value]) => [nodeId, value.color]),
     );
   }, [activeId, edges]);
-  // ─── Drag system ──────────────────────────────────────────────────────────
-  // We use pointer events directly (instead of framer-motion drag) so the wave
-  // rAF loop, edge endpoints, and node visuals all read from one source of
-  // truth — `draggedPositions` state. This keeps relation lines pinned to the
-  // node throughout the drag without the visual jump that motion-layout would
-  // introduce when committing a transform back to layout coords.
-  const dragStateRef = useRef<{
-    nodeId: string;
-    pointerId: number;
-    // Pointer coordinates at drag start, in SVG viewport units.
-    startSvgX: number;
-    startSvgY: number;
-    // Node coordinates at drag start.
-    startNodeX: number;
-    startNodeY: number;
-    moved: boolean;
-    rafId: number;
-    pending: { x: number; y: number } | null;
-    inverseCtm: DOMMatrix | null;
-  } | null>(null);
-
   const screenToSvg = useCallback((clientX: number, clientY: number) => {
     const svg = svgRef.current;
     if (!svg) {
@@ -1506,6 +1545,82 @@ export function ProjectGraph() {
     });
   }, []);
 
+  const setNodeVisualRef = useCallback((nodeId: string, element: SVGGElement | null) => {
+    if (element) {
+      nodeVisualRefs.current.set(nodeId, element);
+    } else {
+      nodeVisualRefs.current.delete(nodeId);
+    }
+  }, []);
+
+  const setEdgeLineRef = useCallback(
+    (edgeId: string, layer: keyof EdgeLineRefs, element: SVGLineElement | null) => {
+      const refs =
+        edgeLineRefs.current.get(edgeId) ??
+        {
+          glow: null,
+          soft: null,
+          core: null,
+        };
+
+      refs[layer] = element;
+
+      if (refs.glow || refs.soft || refs.core) {
+        edgeLineRefs.current.set(edgeId, refs);
+      } else {
+        edgeLineRefs.current.delete(edgeId);
+      }
+    },
+    [],
+  );
+
+  const syncIncidentEdges = useCallback(
+    (nodeId: string) => {
+      const positions = livePositionsRef.current;
+
+      for (const edge of edges) {
+        if (edge.source !== nodeId && edge.target !== nodeId) {
+          continue;
+        }
+
+        const source = positions.get(edge.source);
+        const target = positions.get(edge.target);
+
+        if (!source || !target) {
+          continue;
+        }
+
+        const endpoints = getEdgeEndpoints(source, target);
+        const refs = edgeLineRefs.current.get(edgePairKey(edge.source, edge.target));
+
+        if (!refs) {
+          continue;
+        }
+
+        setLineEndpoints(refs.glow, endpoints);
+        setLineEndpoints(refs.soft, endpoints);
+        setLineEndpoints(refs.core, endpoints);
+      }
+    },
+    [edges],
+  );
+
+  const applyLiveDragPosition = useCallback(
+    (nodeId: string, x: number, y: number) => {
+      const nextPositions = new Map(livePositionsRef.current);
+      nextPositions.set(nodeId, { x, y });
+      livePositionsRef.current = nextPositions;
+
+      const nodeElement = nodeVisualRefs.current.get(nodeId);
+      if (nodeElement) {
+        nodeElement.setAttribute("transform", `translate(${x.toFixed(2)} ${y.toFixed(2)})`);
+      }
+
+      syncIncidentEdges(nodeId);
+    },
+    [syncIncidentEdges],
+  );
+
   const handleNodePointerDown = useCallback(
     (event: React.PointerEvent<SVGGElement>, node: Node) => {
       // Only respond to primary button / single-finger touch / pen.
@@ -1523,16 +1638,16 @@ export function ProjectGraph() {
       event.currentTarget.setPointerCapture(event.pointerId);
       // Cache an inverse CTM for fast pointer→SVG conversion during drag.
       const ctm = svgRef.current?.getScreenCTM() ?? null;
+      const liveStart = livePositionsRef.current.get(node.id) ?? node;
 
       dragStateRef.current = {
         nodeId: node.id,
         pointerId: event.pointerId,
         startSvgX: start.x,
         startSvgY: start.y,
-        startNodeX: node.x,
-        startNodeY: node.y,
+        startNodeX: liveStart.x,
+        startNodeY: liveStart.y,
         moved: false,
-        rafId: 0,
         pending: null,
         inverseCtm: ctm ? ctm.inverse() : null,
       };
@@ -1566,27 +1681,17 @@ export function ProjectGraph() {
         return;
       }
 
+      event.preventDefault();
       const nextX = clamp(drag.startNodeX + dx, NODE_RADIUS, VIEWBOX_W - NODE_RADIUS);
       const nextY = clamp(drag.startNodeY + dy, NODE_RADIUS, VIEWBOX_H - NODE_RADIUS);
 
-      // Coalesce updates with rAF — we only need at most one state update
-      // per paint frame even if the browser fires many pointermove events.
+      // Move the rendered SVG immediately. React state is committed on
+      // pointer-up so a render cannot reset the badge to an older frame while
+      // the pointer is still moving.
+      applyLiveDragPosition(drag.nodeId, nextX, nextY);
       drag.pending = { x: nextX, y: nextY };
-      if (drag.rafId === 0) {
-        drag.rafId = window.requestAnimationFrame(() => {
-          const live = dragStateRef.current;
-          if (!live) {
-            return;
-          }
-          live.rafId = 0;
-          if (live.pending) {
-            commitDragPosition(live.nodeId, live.pending.x, live.pending.y);
-            live.pending = null;
-          }
-        });
-      }
     },
-    [commitDragPosition, draggingId, screenToSvg],
+    [applyLiveDragPosition, draggingId, screenToSvg],
   );
 
   const finishDrag = useCallback(
@@ -1596,17 +1701,18 @@ export function ProjectGraph() {
         return { wasDrag: false };
       }
 
-      // Flush any pending rAF position so the final spot is committed.
-      if (drag.rafId !== 0) {
-        window.cancelAnimationFrame(drag.rafId);
-        drag.rafId = 0;
-        if (drag.pending) {
-          commitDragPosition(drag.nodeId, drag.pending.x, drag.pending.y);
+      const wasDrag = drag.moved;
+      if (wasDrag) {
+        // Commit the final live coordinate after the drag ends.
+        const finalPosition =
+          drag.pending ?? livePositionsRef.current.get(drag.nodeId) ?? null;
+        if (finalPosition) {
+          applyLiveDragPosition(drag.nodeId, finalPosition.x, finalPosition.y);
+          commitDragPosition(drag.nodeId, finalPosition.x, finalPosition.y);
           drag.pending = null;
         }
       }
 
-      const wasDrag = drag.moved;
       try {
         event.currentTarget.releasePointerCapture(drag.pointerId);
       } catch {
@@ -1618,7 +1724,7 @@ export function ProjectGraph() {
       }
       return { wasDrag };
     },
-    [commitDragPosition, draggingId],
+    [applyLiveDragPosition, commitDragPosition, draggingId],
   );
 
   const clusterFlows = useMemo(() => {
@@ -1848,9 +1954,23 @@ export function ProjectGraph() {
                 height="280%"
                 colorInterpolationFilters="sRGB"
               >
-                <feGaussianBlur stdDeviation="4.8" result="signalBlur" />
+                <feGaussianBlur stdDeviation="2.8" result="signalBlur" />
                 <feMerge>
                   <feMergeNode in="signalBlur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <filter
+                id="project-node-inner-bloom"
+                x="-30%"
+                y="-30%"
+                width="160%"
+                height="160%"
+                colorInterpolationFilters="sRGB"
+              >
+                <feGaussianBlur stdDeviation="2.2" result="innerBloomBlur" />
+                <feMerge>
+                  <feMergeNode in="innerBloomBlur" />
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
@@ -1889,6 +2009,7 @@ export function ProjectGraph() {
               return (
                 <g key={edgeId} pointerEvents="none">
                   <motion.line
+                    ref={(element) => setEdgeLineRef(edgeId, "glow", element)}
                     x1={endpoints.x1}
                     y1={endpoints.y1}
                     x2={endpoints.x2}
@@ -1912,6 +2033,7 @@ export function ProjectGraph() {
                     }}
                   />
                   <motion.line
+                    ref={(element) => setEdgeLineRef(edgeId, "soft", element)}
                     x1={endpoints.x1}
                     y1={endpoints.y1}
                     x2={endpoints.x2}
@@ -1934,6 +2056,7 @@ export function ProjectGraph() {
                     }}
                   />
                   <motion.line
+                    ref={(element) => setEdgeLineRef(edgeId, "core", element)}
                     x1={endpoints.x1}
                     y1={endpoints.y1}
                     x2={endpoints.x2}
@@ -1978,26 +2101,36 @@ export function ProjectGraph() {
             {liveNodes.map((node) => {
               const Icon = node.project.icon;
               const focused = activeId === node.id;
-              const arrivalGlow = arrivalGlowById.get(node.id);
-              const arriving = Boolean(arrivalGlow);
+              const arrivalBloom = arrivalBloomById.get(node.id);
               const dim = !isHighlighted(node.id);
               const labelLines = splitLabel(node.project.title);
               const accentColor =
                 activeAccentById.get(node.id) ??
                 nodeAccentById.get(node.id) ??
                 "#7dd3fc";
+              const bloomColor = arrivalBloom?.color ?? accentColor;
               const glowColor = accentColor;
               const glowActive = focused;
-              const baseGlowActive = focused || arriving;
+              const safeNodeId = toSvgId(node.id);
+              const bloomClipId = `project-node-bloom-clip-${safeNodeId}`;
+              const bloomGradientId = arrivalBloom
+                ? `project-node-bloom-fill-${safeNodeId}-${Math.round(arrivalBloom.token)}`
+                : "";
               const isDraggingThis = draggingId === node.id;
+              const visualPosition =
+                dragStateRef.current?.nodeId === node.id
+                  ? livePositionsRef.current.get(node.id) ?? node
+                  : node;
 
               return (
                 <motion.g
                   key={node.id}
+                  ref={(element) => setNodeVisualRef(node.id, element)}
                   role="button"
                   tabIndex={0}
+                  transform={`translate(${visualPosition.x}, ${visualPosition.y})`}
                   animate={{
-                    opacity: dim && !arriving ? 0.32 : 1,
+                    opacity: dim ? 0.32 : 1,
                   }}
                   transition={{
                     opacity: {
@@ -2009,6 +2142,7 @@ export function ProjectGraph() {
                     cursor: isDraggingThis ? "grabbing" : "grab",
                     outline: "none",
                     touchAction: "none",
+                    willChange: isDraggingThis ? "transform" : "auto",
                   }}
                   onPointerDown={(event) => handleNodePointerDown(event, node)}
                   onPointerMove={handleNodePointerMove}
@@ -2045,14 +2179,30 @@ export function ProjectGraph() {
                   aria-label={`Preview ${node.id}`}
                 >
                   {/*
-                    All node visuals share one transform group. SVG translate
-                    is a synchronous DOM write, so dragging the node moves
-                    every halo, ring, icon, and label in perfect lockstep —
-                    framer-motion can no longer auto-tween cx/cy across drag
-                    frames because none of the children have changing
-                    positional props.
+                    All node visuals live at local 0,0. The parent motion.g
+                    is the pointer-captured element and the only translated
+                    group, so the drag target and rendered badge are identical.
                   */}
-                  <g transform={`translate(${node.x}, ${node.y})`}>
+                  <g>
+                    <defs>
+                      <clipPath id={bloomClipId}>
+                        <circle cx={0} cy={0} r={NODE_RADIUS - 0.6} />
+                      </clipPath>
+                      {arrivalBloom && (
+                        <radialGradient
+                          id={bloomGradientId}
+                          gradientUnits="userSpaceOnUse"
+                          cx={0}
+                          cy={0}
+                          r={NODE_RADIUS * 1.85}
+                        >
+                          <stop offset="0%" stopColor={bloomColor} stopOpacity="1" />
+                          <stop offset="38%" stopColor={bloomColor} stopOpacity="0.82" />
+                          <stop offset="72%" stopColor={bloomColor} stopOpacity="0.48" />
+                          <stop offset="100%" stopColor={bloomColor} stopOpacity="0.12" />
+                        </radialGradient>
+                      )}
+                    </defs>
                     <circle
                       cx={0}
                       cy={0}
@@ -2060,154 +2210,68 @@ export function ProjectGraph() {
                       fill="transparent"
                       pointerEvents="all"
                     />
-                    {arrivalGlow && (
-                      <>
-                        {/* Outer halo — slow, soft, far-reaching */}
-                        <motion.circle
-                          key={`${node.id}-arrival-halo-${arrivalGlow.token}`}
-                          aria-hidden="true"
-                          cx={0}
-                          cy={0}
-                          fill={glowColor}
-                          filter="url(#project-node-glow)"
-                          initial={{ opacity: 0, r: NODE_RADIUS + 6 }}
-                          animate={
-                            shouldReduceMotion
-                              ? { opacity: 0.24, r: NODE_RADIUS + 32 }
-                              : {
-                                  opacity: [0, 0.36, 0],
-                                  r: [NODE_RADIUS + 8, NODE_RADIUS + 50],
-                                }
-                          }
-                          transition={{
-                            opacity: {
-                              duration: shouldReduceMotion
-                                ? GLOW_BLOOM_DURATION_REDUCED
-                                : GLOW_BLOOM_DURATION_HALO,
-                              times: shouldReduceMotion
-                                ? undefined
-                                : [0, 0.28, 1],
-                              ease: GLOW_EASE_EXPO_OUT,
-                            },
-                            r: {
-                              duration: shouldReduceMotion
-                                ? GLOW_BLOOM_DURATION_REDUCED
-                                : GLOW_BLOOM_DURATION_HALO,
-                              ease: GLOW_EASE_EXPO_OUT,
-                            },
-                          }}
-                        />
-                        {/* Middle ring — medium ripple */}
-                        <motion.circle
-                          key={`${node.id}-arrival-mid-${arrivalGlow.token}`}
-                          aria-hidden="true"
-                          cx={0}
-                          cy={0}
-                          fill={glowColor}
-                          filter="url(#project-node-glow)"
-                          initial={{ opacity: 0, r: NODE_RADIUS + 2 }}
-                          animate={
-                            shouldReduceMotion
-                              ? { opacity: 0.3, r: NODE_RADIUS + 18 }
-                              : {
-                                  opacity: [0, 0.5, 0],
-                                  r: [NODE_RADIUS + 4, NODE_RADIUS + 32],
-                                }
-                          }
-                          transition={{
-                            opacity: {
-                              duration: shouldReduceMotion
-                                ? GLOW_BLOOM_DURATION_REDUCED
-                                : GLOW_BLOOM_DURATION_MID,
-                              times: shouldReduceMotion
-                                ? undefined
-                                : [0, 0.24, 1],
-                              ease: GLOW_EASE_EXPO_OUT,
-                            },
-                            r: {
-                              duration: shouldReduceMotion
-                                ? GLOW_BLOOM_DURATION_REDUCED
-                                : GLOW_BLOOM_DURATION_MID,
-                              ease: GLOW_EASE_EXPO_OUT,
-                            },
-                          }}
-                        />
-                        {/* Bright core — the "pop" right at the node */}
-                        <motion.circle
-                          key={`${node.id}-arrival-core-${arrivalGlow.token}`}
-                          aria-hidden="true"
-                          cx={0}
-                          cy={0}
-                          fill={glowColor}
-                          initial={{ opacity: 0, r: NODE_RADIUS - 1 }}
-                          animate={
-                            shouldReduceMotion
-                              ? { opacity: 0.5, r: NODE_RADIUS + 8 }
-                              : {
-                                  opacity: [0, 0.72, 0],
-                                  r: [NODE_RADIUS + 1, NODE_RADIUS + 16],
-                                }
-                          }
-                          transition={{
-                            opacity: {
-                              duration: shouldReduceMotion
-                                ? GLOW_BLOOM_DURATION_REDUCED
-                                : GLOW_BLOOM_DURATION_CORE,
-                              times: shouldReduceMotion
-                                ? undefined
-                                : [0, 0.32, 1],
-                              ease: GLOW_EASE_EXPO_OUT,
-                            },
-                            r: {
-                              duration: shouldReduceMotion
-                                ? GLOW_BLOOM_DURATION_REDUCED
-                                : GLOW_BLOOM_DURATION_CORE,
-                              ease: GLOW_EASE_EXPO_OUT,
-                            },
-                          }}
-                        />
-                      </>
-                    )}
                     <motion.circle
                       aria-hidden="true"
                       cx={0}
                       cy={0}
-                      r={NODE_RADIUS + 24}
+                      r={NODE_RADIUS + 18}
                       fill={glowColor}
                       filter="url(#project-node-glow)"
+                      initial={false}
                       animate={{
-                        opacity: baseGlowActive ? 0.32 : 0,
+                        opacity: glowActive ? 0.16 : 0,
                       }}
                       transition={{
                         duration: shouldReduceMotion ? 0.01 : 0.55,
-                        ease: GLOW_EASE_EXPO_OUT,
+                        ease: BLOOM_EASE_EXPO_OUT,
                       }}
                     />
                     <motion.circle
                       aria-hidden="true"
                       cx={0}
                       cy={0}
-                      r={NODE_RADIUS + 14}
+                      r={NODE_RADIUS + 8}
                       fill={glowColor}
+                      initial={false}
                       animate={{
-                        opacity: baseGlowActive ? 0.2 : 0,
+                        opacity: glowActive ? 0.08 : 0,
                       }}
                       transition={{
                         duration: shouldReduceMotion ? 0.01 : 0.55,
-                        ease: GLOW_EASE_EXPO_OUT,
+                        ease: BLOOM_EASE_EXPO_OUT,
                       }}
                     />
 
-                    <circle
+                    <motion.circle
                       cx={0}
                       cy={0}
                       r={NODE_RADIUS}
                       fill={glowActive ? glowColor : "rgba(255,255,255,0.045)"}
-                      fillOpacity={glowActive ? 0.24 : 1}
-                      stroke={glowActive ? glowColor : dim ? "rgba(255,255,255,0.08)" : accentColor}
-                      strokeOpacity={glowActive ? 0.92 : dim ? 1 : 0.42}
-                      strokeWidth={glowActive ? 2 : 1}
+                      initial={false}
+                      animate={{
+                        fillOpacity: glowActive ? 0.22 : 1,
+                        stroke: glowActive
+                            ? glowColor
+                            : dim
+                              ? "rgba(255,255,255,0.08)"
+                              : accentColor,
+                        strokeOpacity: glowActive ? 0.88 : dim ? 1 : 0.42,
+                        strokeWidth: glowActive ? 2 : 1,
+                      }}
+                      transition={{
+                        duration: shouldReduceMotion ? 0.01 : 1.15,
+                        ease: BLOOM_EASE_SLOW_IN_OUT,
+                      }}
                     />
+                    {arrivalBloom && (
+                      <BadgeBloom
+                        key={`${node.id}-bloom-${arrivalBloom.token}`}
+                        color={bloomColor}
+                        clipPathId={bloomClipId}
+                        gradientId={bloomGradientId}
+                        shouldReduceMotion={shouldReduceMotion}
+                      />
+                    )}
                     <Icon
                       x={-8.75}
                       y={-8.75}
@@ -2335,10 +2399,9 @@ type SegmentSliceRefs = {
   stops: (SVGStopElement | null)[];
 };
 
-// Fixed offsets used for the 7 gradient stops. We sample the wave profile at
-// each one rather than moving the offsets — this lets the wave bleed past
-// segment ends (center > 1 or < 0) without SVG clipping the stops.
-const STOP_OFFSETS = [0, 1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6, 1] as const;
+// Fixed offsets used for the gradient stops. A denser set lets the compact
+// wave move smoothly instead of popping from one coarse stop to the next.
+const STOP_OFFSETS = Array.from({ length: 15 }, (_, index) => index / 14);
 
 function GraphTubeFlow({
   flow,
@@ -2350,7 +2413,7 @@ function GraphTubeFlow({
   flow: ClusterFlow;
   opacityPeak: number;
   shouldReduceMotion: boolean | null;
-  onNodeArrive: (nodeId: string) => void;
+  onNodeArrive: (arrival: NodeArrival) => void;
   livePositionsRef: React.MutableRefObject<Map<string, LivePosition>>;
 }) {
   const reduced = Boolean(shouldReduceMotion);
@@ -2434,25 +2497,29 @@ function GraphTubeFlow({
       );
       const localProgress = routeUnits - activeIndex;
 
-      // Direction-aware arrival glow: when going forward, fire as the wave
+      const positions = livePositionsRef.current;
+
+      // Direction-aware arrival bloom: when going forward, fire as the wave
       // approaches the segment's *end* node; when going backward, fire as
       // it approaches the segment's *start* node. The arrivalKey encodes
       // cycle + segment + direction so a bounce in/out of a terminal node
-      // still triggers a fresh bloom on each pass instead of silently
+      // still triggers a fresh fill on each pass instead of silently
       // skipping it.
       const arrivalThreshold = goingForward
         ? localProgress > 0.78
         : localProgress < 0.22;
+      const arrivalSegment = segments[activeIndex];
       const arrivalNodeId = goingForward
-        ? segments[activeIndex].endId
-        : segments[activeIndex].startId;
+        ? arrivalSegment.endId
+        : arrivalSegment.startId;
       const arrivalKey = `${cycleNumber}-${activeIndex}-${goingForward ? "f" : "b"}`;
       if (arrivalThreshold && arrivalKey !== lastArrivalKey) {
         lastArrivalKey = arrivalKey;
-        onArriveRef.current(arrivalNodeId);
+        onArriveRef.current({
+          nodeId: arrivalNodeId,
+          color: arrivalSegment.edge.color,
+        });
       }
-
-      const positions = livePositionsRef.current;
       const overlap = WAVE_HANDOFF_OVERLAP;
 
       for (let i = 0; i < segments.length; i++) {
@@ -2468,21 +2535,12 @@ function GraphTubeFlow({
           continue;
         }
 
-        const endpoints = getEdgeEndpoints(
-          startNode as unknown as Node,
-          endNode as unknown as Node,
-        );
+        const endpoints = getEdgeEndpoints(startNode, endNode);
 
         // Update segment-line endpoints live so dragging a node carries the
         // wave with it.
-        setSvgAttr(slice.tube, "x1", endpoints.x1);
-        setSvgAttr(slice.tube, "y1", endpoints.y1);
-        setSvgAttr(slice.tube, "x2", endpoints.x2);
-        setSvgAttr(slice.tube, "y2", endpoints.y2);
-        setSvgAttr(slice.channel, "x1", endpoints.x1);
-        setSvgAttr(slice.channel, "y1", endpoints.y1);
-        setSvgAttr(slice.channel, "x2", endpoints.x2);
-        setSvgAttr(slice.channel, "y2", endpoints.y2);
+        setLineEndpoints(slice.tube, endpoints);
+        setLineEndpoints(slice.channel, endpoints);
         setSvgAttr(slice.gradient, "x1", endpoints.x1);
         setSvgAttr(slice.gradient, "y1", endpoints.y1);
         setSvgAttr(slice.gradient, "x2", endpoints.x2);
@@ -2527,7 +2585,7 @@ function GraphTubeFlow({
 
         const peak = peakOpacity * WAVE_PEAK_OPACITY * waveIntensity * envelope;
         const tubeOpacity =
-          peakOpacity * (0.55 + 0.35 * envelope) * waveIntensity;
+          peakOpacity * (0.3 + 0.42 * envelope) * waveIntensity;
         const tubeWidth =
           WAVE_STROKE_BASE +
           (WAVE_STROKE_PEAK - WAVE_STROKE_BASE) * envelope;
@@ -2628,6 +2686,122 @@ function GraphTubeFlow({
           />
         </g>
       ))}
+    </g>
+  );
+}
+
+function BadgeBloom({
+  color,
+  clipPathId,
+  gradientId,
+  shouldReduceMotion,
+}: {
+  color: string;
+  clipPathId: string;
+  gradientId: string;
+  shouldReduceMotion: boolean | null;
+}) {
+  const faceRef = useRef<SVGCircleElement | null>(null);
+  const fillRef = useRef<SVGCircleElement | null>(null);
+  const coreRef = useRef<SVGCircleElement | null>(null);
+
+  useEffect(() => {
+    const face = faceRef.current;
+    const fill = fillRef.current;
+    const core = coreRef.current;
+
+    if (!face || !fill || !core) {
+      return;
+    }
+
+    const setNumber = (
+      element: SVGElement,
+      name: string,
+      value: number,
+      precision = 4,
+    ) => {
+      element.setAttribute(name, value.toFixed(precision));
+    };
+
+    const applyBloom = (progress: number) => {
+      const holdStart = BADGE_BLOOM_RAMP_PORTION;
+      const fadeStart = BADGE_BLOOM_RAMP_PORTION + BADGE_BLOOM_HOLD_PORTION;
+      let brightness = 1;
+
+      if (progress < holdStart) {
+        const ramp = smoothstep(progress / holdStart);
+        brightness = Math.pow(ramp, 3.1);
+      } else if (progress > fadeStart) {
+        brightness = 1 - smoothstep((progress - fadeStart) / (1 - fadeStart));
+      }
+
+      const growth = Math.pow(smoothstep(Math.min(progress / 0.78, 1)), 1.25);
+      const fillRadius = NODE_RADIUS * (0.03 + 1.82 * growth);
+      const coreRadius = NODE_RADIUS * (0.08 + 0.82 * Math.pow(brightness, 0.75));
+
+      setNumber(face, "opacity", BADGE_BLOOM_FACE_OPACITY * Math.pow(brightness, 1.2));
+      setNumber(fill, "opacity", BADGE_BLOOM_PEAK_OPACITY * brightness);
+      setNumber(fill, "r", fillRadius, 2);
+      setNumber(core, "opacity", BADGE_BLOOM_CORE_OPACITY * Math.pow(brightness, 1.35));
+      setNumber(core, "r", coreRadius, 2);
+    };
+
+    if (shouldReduceMotion) {
+      applyBloom(0.74);
+      return;
+    }
+
+    let frame = 0;
+    const startedAt = window.performance.now();
+    const durationMs = BADGE_BLOOM_DURATION * 1000;
+
+    const draw = (time: number) => {
+      const progress = clamp01((time - startedAt) / durationMs);
+      applyBloom(progress);
+
+      if (progress < 1) {
+        frame = window.requestAnimationFrame(draw);
+      } else {
+        setNumber(face, "opacity", 0);
+        setNumber(fill, "opacity", 0);
+        setNumber(core, "opacity", 0);
+      }
+    };
+
+    frame = window.requestAnimationFrame(draw);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+    };
+  }, [shouldReduceMotion]);
+
+  return (
+    <g clipPath={`url(#${clipPathId})`} pointerEvents="none" aria-hidden="true">
+      <circle
+        ref={faceRef}
+        cx={0}
+        cy={0}
+        r={NODE_RADIUS}
+        fill={color}
+        opacity={0}
+      />
+      <circle
+        ref={fillRef}
+        cx={0}
+        cy={0}
+        r={NODE_RADIUS * 0.03}
+        fill={`url(#${gradientId})`}
+        opacity={0}
+      />
+      <circle
+        ref={coreRef}
+        cx={0}
+        cy={0}
+        r={NODE_RADIUS * 0.08}
+        fill={color}
+        filter="url(#project-node-inner-bloom)"
+        opacity={0}
+      />
     </g>
   );
 }
