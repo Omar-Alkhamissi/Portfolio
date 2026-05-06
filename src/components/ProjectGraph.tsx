@@ -353,24 +353,35 @@ function hashString(value: string) {
   return Math.abs(hash);
 }
 
+const TAG_TO_FAMILY_COLOR: Record<string, string> = (() => {
+  const map: Record<string, string> = {};
+  for (const family of EDGE_COLOR_FAMILIES) {
+    for (const tag of family.tags) {
+      if (!map[tag]) map[tag] = family.color;
+    }
+  }
+  return map;
+})();
+
 function edgeColorForShared(shared: string[], frequency: Map<string, number>) {
   const rankedTags = shared
-    .filter((tech) => EDGE_TAG_COLORS[tech])
     .map((tech, index) => {
       const rarity = 1 / Math.sqrt(frequency.get(tech) ?? 1);
       const specificity = GENERIC_COLOR_TAGS.has(tech) ? 0 : 1.4;
       const score = specificity + weightOf(tech) * 1.55 + rarity;
 
-      return {
-        color: EDGE_TAG_COLORS[tech],
-        index,
-        score,
-      };
+      return { tag: tech, index, score };
     })
     .sort((a, b) => b.score - a.score || a.index - b.index);
 
-  if (rankedTags[0]) {
-    return rankedTags[0].color;
+  for (const ranked of rankedTags) {
+    const familyColor = TAG_TO_FAMILY_COLOR[ranked.tag];
+    if (familyColor) return familyColor;
+  }
+
+  for (const ranked of rankedTags) {
+    const tagColor = EDGE_TAG_COLORS[ranked.tag];
+    if (tagColor) return tagColor;
   }
 
   const fallbackIndex = hashString(shared.join("|")) % DEFAULT_EDGE_COLORS.length;
@@ -675,18 +686,20 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
   }
 
   const candidateEdges: Edge[] = [];
+  const candidateByPair = new Map<string, Edge>();
+  const pairKey = (a: string, b: string) => (a < b ? `${a}--${b}` : `${b}--${a}`);
 
   for (let i = 0; i < items.length; i++) {
     const aDirectTech = new Set(directTech[i]);
-    const aRelationshipTech = new Set(relationshipTech[i]);
     const aColorTech = new Set(directColorTech[i]);
 
     for (let j = i + 1; j < items.length; j++) {
       const directShared = directTech[j].filter((tech) => aDirectTech.has(tech));
-      const relationshipShared = relationshipTech[j].filter((tech) =>
-        aRelationshipTech.has(tech),
-      );
-      const shared = Array.from(new Set([...directShared, ...relationshipShared]));
+
+      if (directShared.length === 0) {
+        continue;
+      }
+
       const directColorShared = directColorTech[j].filter((tech) =>
         aColorTech.has(tech),
       );
@@ -695,65 +708,156 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
           ? directColorShared
           : directShared.filter((tech) => !INFERRED_COLOR_TAGS.has(tech));
 
-      if (directShared.length > 0) {
-        const weight = scoreSharedTech(shared, techFrequency);
-        const meaningfulShared = directShared.filter((tech) => weightOf(tech) >= 0.5);
+      const weight = scoreSharedTech(directShared, techFrequency);
+      const strongShared = directShared.filter((tech) => weightOf(tech) >= 0.85);
+      const meaningfulShared = directShared.filter((tech) => weightOf(tech) >= 0.7);
 
-        if (weight < 0.42 || meaningfulShared.length === 0) {
-          continue;
-        }
+      const passes =
+        strongShared.length >= 1 ||
+        meaningfulShared.length >= 2 ||
+        weight >= 1.15;
 
-        candidateEdges.push({
-          source: items[i].title,
-          target: items[j].title,
-          weight,
-          shared,
-          color:
-            concreteShared.length > 0
-              ? edgeColorForShared(concreteShared, techFrequency)
-              : fallbackEdgeColor(items[i].title, items[j].title),
-        });
+      if (!passes) {
+        continue;
+      }
+
+      const edge: Edge = {
+        source: items[i].title,
+        target: items[j].title,
+        weight,
+        shared: directShared,
+        color:
+          concreteShared.length > 0
+            ? edgeColorForShared(concreteShared, techFrequency)
+            : fallbackEdgeColor(items[i].title, items[j].title),
+      };
+
+      candidateEdges.push(edge);
+      candidateByPair.set(pairKey(edge.source, edge.target), edge);
+    }
+  }
+
+  const CURATED_GROUPS: { label: string; members: string[]; color: string }[] = [
+    {
+      label: "Pure SQL design",
+      color: "#ef4444",
+      members: [
+        "Order Management System",
+        "Data Warehouse ETL Pipeline",
+        "Drone Management System",
+        "Employee Management System",
+        "Family Genealogy Database",
+      ],
+    },
+    {
+      label: "Java OOP",
+      color: "#b07219",
+      members: [
+        "Customer Data Storage",
+        "Student Loan App",
+        "Enigma Machine Simulator",
+      ],
+    },
+    {
+      label: "C++ systems",
+      color: "#f34b7d",
+      members: [
+        "Expression Evaluator",
+        "Khronos Calendar Library",
+        "Patient Diagnosis Classifier",
+        "Triage Priority Queue",
+      ],
+    },
+    {
+      label: "GoF design patterns",
+      color: "#c084fc",
+      members: [
+        "Coffee Shop POS",
+        "Collaborative Drawing App",
+        "Document Factory",
+        "Stack Evaluator",
+      ],
+    },
+  ];
+
+  const titleSet = new Set(items.map((p) => p.title));
+  const curatedEdges: Edge[] = [];
+
+  for (const group of CURATED_GROUPS) {
+    const present = group.members.filter((m) => titleSet.has(m));
+    for (let i = 0; i < present.length; i++) {
+      for (let j = i + 1; j < present.length; j++) {
+        const key = pairKey(present[i], present[j]);
+        if (candidateByPair.has(key)) continue;
+        const edge: Edge = {
+          source: present[i],
+          target: present[j],
+          weight: 1.0,
+          shared: [group.label],
+          color: group.color,
+        };
+        curatedEdges.push(edge);
+        candidateByPair.set(key, edge);
       }
     }
   }
 
-  const byNode = new Map<string, Edge[]>();
+  let edges: Edge[] = [...candidateEdges, ...curatedEdges];
 
-  for (const edge of candidateEdges) {
-    const sourceList = byNode.get(edge.source) ?? [];
-    sourceList.push(edge);
-    byNode.set(edge.source, sourceList);
-
-    const targetList = byNode.get(edge.target) ?? [];
-    targetList.push(edge);
-    byNode.set(edge.target, targetList);
+  const edgesByNode = new Map<string, Edge[]>();
+  for (const edge of edges) {
+    (edgesByNode.get(edge.source) ?? edgesByNode.set(edge.source, []).get(edge.source)!).push(edge);
+    (edgesByNode.get(edge.target) ?? edgesByNode.set(edge.target, []).get(edge.target)!).push(edge);
   }
 
-  const retained = new Set<string>();
+  const titleToCluster = new Map(nodes.map((n) => [n.id, n.cluster]));
+  const titleToIndex = new Map(items.map((p, idx) => [p.title, idx]));
 
-  for (const edge of candidateEdges) {
-    const meaningfulShared = edge.shared.filter(
-      (tech) => weightOf(tech) >= 0.7,
-    ).length;
-
-    if (edge.weight >= 0.95 || meaningfulShared >= 2) {
-      retained.add(`${edge.source}--${edge.target}`);
+  const findBestNeighbor = (
+    node: Node,
+    aDirect: Set<string>,
+    sameClusterOnly: boolean,
+  ) => {
+    let best: { other: Project; weight: number; shared: string[] } | null = null;
+    for (const other of items) {
+      if (other.title === node.id) continue;
+      if (sameClusterOnly && titleToCluster.get(other.title) !== node.cluster) continue;
+      const oDirect = directTech[titleToIndex.get(other.title)!];
+      const shared = oDirect.filter((tech) => aDirect.has(tech));
+      if (shared.length === 0) continue;
+      const w = scoreSharedTech(shared, techFrequency);
+      if (!best || w > best.weight) best = { other, weight: w, shared };
     }
-  }
+    return best;
+  };
 
   for (const node of nodes) {
-    const strongest = (byNode.get(node.id) ?? [])
-      .sort((a, b) => b.weight - a.weight)
-      .slice(0, 2);
+    if ((edgesByNode.get(node.id) ?? []).length > 0) continue;
 
-    for (const edge of strongest) {
-      retained.add(`${edge.source}--${edge.target}`);
+    const aDirect = new Set(directTech[titleToIndex.get(node.id)!]);
+    const best =
+      findBestNeighbor(node, aDirect, true) ??
+      findBestNeighbor(node, aDirect, false);
+
+    if (best) {
+      const key = pairKey(node.id, best.other.title);
+      if (!candidateByPair.has(key)) {
+        const concrete = best.shared.filter((tech) => !INFERRED_COLOR_TAGS.has(tech));
+        const edge: Edge = {
+          source: node.id,
+          target: best.other.title,
+          weight: best.weight,
+          shared: best.shared,
+          color:
+            concrete.length > 0
+              ? edgeColorForShared(concrete, techFrequency)
+              : fallbackEdgeColor(node.id, best.other.title),
+        };
+        edges.push(edge);
+        candidateByPair.set(key, edge);
+      }
     }
   }
-
-  const edges = candidateEdges.filter((edge) =>
-    retained.has(`${edge.source}--${edge.target}`),
-  );
 
   for (const edge of edges) {
     const sourceNode = nodes.find((node) => node.id === edge.source);
