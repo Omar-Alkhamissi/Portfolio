@@ -40,14 +40,6 @@ type TubeSegment = {
   edge: Edge;
   startId: string;
   endId: string;
-  startNodeX: number;
-  startNodeY: number;
-  endNodeX: number;
-  endNodeY: number;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
 };
 
 type ClusterFlow = {
@@ -68,6 +60,8 @@ type ArrivalGlow = {
   token: number;
 };
 
+type LivePosition = { x: number; y: number };
+
 const VIEWBOX_W = 1320;
 const VIEWBOX_H = 860;
 const CENTER_X = VIEWBOX_W / 2;
@@ -76,6 +70,50 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const NODE_RADIUS = 27;
 const LINE_GAP = NODE_RADIUS + 3;
 const LABEL_GAP = 12;
+
+// ─── Animation tuning ────────────────────────────────────────────────────────
+// Wave (pressure / "water in a vein") — duration of one segment traversal.
+const WAVE_SEGMENT_DURATION = 1.65;
+const WAVE_SEGMENT_DURATION_REDUCED = 3.6;
+// How much the wave bleeds into the adjacent segment around node junctions.
+// Expressed as a fraction of one segment duration.
+const WAVE_HANDOFF_OVERLAP = 0.22;
+// Bell-curve thickness — "spread" is the high-intensity core, "soft" is
+// the gentle outer falloff. Both expressed as a fraction of segment length.
+// A wider soft spread reads as a longer, more watery wave; tighter feels
+// like an electric pulse.
+const WAVE_SPREAD = 0.09;
+const WAVE_SOFT_SPREAD = 0.42;
+// Blend factor between pure linear motion (0) and a full pendulum / smoothstep
+// (1). At 0 the wave reverses direction instantaneously at terminals. At 1
+// it slows to a stop and accelerates back, but the middle of each traversal
+// goes 1.5× faster to preserve total time. 0.18 keeps the average velocity
+// essentially identical to linear — the wave doesn't feel slower — but the
+// velocity reversal at terminals is graceful instead of a hard flip.
+const WAVE_BOUNCE_EASE = 0.18;
+// Peak opacity of the brightest stop in the gradient (0–1).
+const WAVE_PEAK_OPACITY = 0.74;
+// Stroke width range for the active wave line.
+const WAVE_STROKE_BASE = 5.0;
+const WAVE_STROKE_PEAK = 13.6;
+// Ambient channel glow under the wave path. Kept low so inactive lines are
+// not drowned out — set to 0 to fully match inactive edge brightness.
+const WAVE_CHANNEL_OPACITY = 0.045;
+// Glow bloom — three concentric rings (core, mid, halo) that expand and
+// fade like an Apple-style ping. Each ring has its own duration so they
+// don't all peak at the same instant — that staggered breathing is what
+// makes it feel organic instead of stamped.
+const GLOW_BLOOM_DURATION_CORE = 0.95;   // bright pop right at the node
+const GLOW_BLOOM_DURATION_MID = 1.35;    // medium ripple
+const GLOW_BLOOM_DURATION_HALO = 1.7;    // far, soft, slow
+const GLOW_BLOOM_DURATION_REDUCED = 0.01;
+// `expo-out` cubic-bezier — Apple/iOS, Webflow, and Stripe all use this
+// curve for "premium" reveals. Fast initial expansion that gracefully
+// settles, exactly the bloom shape we want.
+const GLOW_EASE_EXPO_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
+// Drag — how many viewport units the pointer must travel before a drag is
+// detected. Below this threshold we treat pointer-up as a click (pin toggle).
+const DRAG_THRESHOLD = 4;
 
 const TECH_WEIGHT: Record<string, number> = {
   react: 1.2,
@@ -1220,14 +1258,48 @@ export function ProjectGraph() {
   const [arrivalGlowById, setArrivalGlowById] = useState<Map<string, ArrivalGlow>>(
     () => new Map(),
   );
+  // Drag overrides for project nodes. Sparse — only contains entries for
+  // nodes the user has manually moved.
+  const [draggedPositions, setDraggedPositions] = useState<Map<string, LivePosition>>(
+    () => new Map(),
+  );
+  const [draggingId, setDraggingId] = useState<string | null>(null);
   const arrivalGlowTimers = useRef<Map<string, number>>(new Map());
   const shouldReduceMotion = useReducedMotion();
+  // Ref consumed by GraphTubeFlow rAF loop so the wave reads up-to-the-frame
+  // node coordinates without forcing the flow component to re-render.
+  const livePositionsRef = useRef<Map<string, LivePosition>>(new Map());
+  const svgRef = useRef<SVGSVGElement | null>(null);
 
   const { nodes, edges } = useMemo(() => {
     const graph = buildGraph(projects);
     runLayout(graph.nodes, graph.edges);
     return graph;
   }, []);
+
+  // Combine the static layout with any drag overrides into a stable array
+  // that the renderer reads from. Nodes themselves are immutable layout
+  // anchors; positions are derived state.
+  const liveNodes = useMemo(
+    () =>
+      nodes.map((node) => {
+        const override = draggedPositions.get(node.id);
+        return override
+          ? { ...node, x: override.x, y: override.y }
+          : node;
+      }),
+    [nodes, draggedPositions],
+  );
+
+  // Keep the ref in sync so rAF readers always see the latest positions,
+  // both during a drag (state updates flush per frame) and after.
+  {
+    const fresh = new Map<string, LivePosition>();
+    for (const node of liveNodes) {
+      fresh.set(node.id, { x: node.x, y: node.y });
+    }
+    livePositionsRef.current = fresh;
+  }
 
   useEffect(() => {
     const activeId = hoveredId ?? pinnedId;
@@ -1296,7 +1368,8 @@ export function ProjectGraph() {
   }, [nodes, edges]);
 
   const previewProject =
-    nodes.find((node) => node.id === (activeId ?? lastViewedId))?.project ?? projects[0];
+    liveNodes.find((node) => node.id === (activeId ?? lastViewedId))?.project ??
+    projects[0];
 
   const previewMode: PreviewMode = hoveredId
     ? "hovered"
@@ -1319,9 +1392,17 @@ export function ProjectGraph() {
   const isEdgeHighlighted = (edge: Edge) =>
     !activeId || edge.source === activeId || edge.target === activeId;
 
+  // Topology-only map — used by route/cluster computation. Kept stable through
+  // drag so the wave route never re-derives.
   const nodeById = useMemo(
     () => new Map(nodes.map((node) => [node.id, node])),
     [nodes],
+  );
+  // Live map — used by edge rendering and node rendering so endpoints follow
+  // dragged positions.
+  const liveNodeById = useMemo(
+    () => new Map(liveNodes.map((node) => [node.id, node])),
+    [liveNodes],
   );
   const nodeAccentById = useMemo(() => {
     const ranked = new Map<string, { color: string; score: number }>();
@@ -1370,6 +1451,176 @@ export function ProjectGraph() {
       Array.from(ranked.entries()).map(([nodeId, value]) => [nodeId, value.color]),
     );
   }, [activeId, edges]);
+  // ─── Drag system ──────────────────────────────────────────────────────────
+  // We use pointer events directly (instead of framer-motion drag) so the wave
+  // rAF loop, edge endpoints, and node visuals all read from one source of
+  // truth — `draggedPositions` state. This keeps relation lines pinned to the
+  // node throughout the drag without the visual jump that motion-layout would
+  // introduce when committing a transform back to layout coords.
+  const dragStateRef = useRef<{
+    nodeId: string;
+    pointerId: number;
+    // Pointer coordinates at drag start, in SVG viewport units.
+    startSvgX: number;
+    startSvgY: number;
+    // Node coordinates at drag start.
+    startNodeX: number;
+    startNodeY: number;
+    moved: boolean;
+    rafId: number;
+    pending: { x: number; y: number } | null;
+    inverseCtm: DOMMatrix | null;
+  } | null>(null);
+
+  const screenToSvg = useCallback((clientX: number, clientY: number) => {
+    const svg = svgRef.current;
+    if (!svg) {
+      return null;
+    }
+
+    const drag = dragStateRef.current;
+    let inverseCtm = drag?.inverseCtm ?? null;
+    if (!inverseCtm) {
+      const ctm = svg.getScreenCTM();
+      if (!ctm) {
+        return null;
+      }
+      inverseCtm = ctm.inverse();
+      if (drag) {
+        drag.inverseCtm = inverseCtm;
+      }
+    }
+
+    const point = svg.createSVGPoint();
+    point.x = clientX;
+    point.y = clientY;
+    const transformed = point.matrixTransform(inverseCtm);
+    return { x: transformed.x, y: transformed.y };
+  }, []);
+
+  const commitDragPosition = useCallback((nodeId: string, x: number, y: number) => {
+    setDraggedPositions((current) => {
+      const next = new Map(current);
+      next.set(nodeId, { x, y });
+      return next;
+    });
+  }, []);
+
+  const handleNodePointerDown = useCallback(
+    (event: React.PointerEvent<SVGGElement>, node: Node) => {
+      // Only respond to primary button / single-finger touch / pen.
+      if (event.button !== 0 && event.pointerType === "mouse") {
+        return;
+      }
+
+      const start = screenToSvg(event.clientX, event.clientY);
+      if (!start) {
+        return;
+      }
+
+      // Capture the pointer so we keep getting events even if the cursor
+      // leaves the node.
+      event.currentTarget.setPointerCapture(event.pointerId);
+      // Cache an inverse CTM for fast pointer→SVG conversion during drag.
+      const ctm = svgRef.current?.getScreenCTM() ?? null;
+
+      dragStateRef.current = {
+        nodeId: node.id,
+        pointerId: event.pointerId,
+        startSvgX: start.x,
+        startSvgY: start.y,
+        startNodeX: node.x,
+        startNodeY: node.y,
+        moved: false,
+        rafId: 0,
+        pending: null,
+        inverseCtm: ctm ? ctm.inverse() : null,
+      };
+    },
+    [screenToSvg],
+  );
+
+  const handleNodePointerMove = useCallback(
+    (event: React.PointerEvent<SVGGElement>) => {
+      const drag = dragStateRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const current = screenToSvg(event.clientX, event.clientY);
+      if (!current) {
+        return;
+      }
+
+      const dx = current.x - drag.startSvgX;
+      const dy = current.y - drag.startSvgY;
+
+      if (!drag.moved && Math.hypot(dx, dy) >= DRAG_THRESHOLD) {
+        drag.moved = true;
+        if (draggingId !== drag.nodeId) {
+          setDraggingId(drag.nodeId);
+        }
+      }
+
+      if (!drag.moved) {
+        return;
+      }
+
+      const nextX = clamp(drag.startNodeX + dx, NODE_RADIUS, VIEWBOX_W - NODE_RADIUS);
+      const nextY = clamp(drag.startNodeY + dy, NODE_RADIUS, VIEWBOX_H - NODE_RADIUS);
+
+      // Coalesce updates with rAF — we only need at most one state update
+      // per paint frame even if the browser fires many pointermove events.
+      drag.pending = { x: nextX, y: nextY };
+      if (drag.rafId === 0) {
+        drag.rafId = window.requestAnimationFrame(() => {
+          const live = dragStateRef.current;
+          if (!live) {
+            return;
+          }
+          live.rafId = 0;
+          if (live.pending) {
+            commitDragPosition(live.nodeId, live.pending.x, live.pending.y);
+            live.pending = null;
+          }
+        });
+      }
+    },
+    [commitDragPosition, draggingId, screenToSvg],
+  );
+
+  const finishDrag = useCallback(
+    (event: React.PointerEvent<SVGGElement>): { wasDrag: boolean } => {
+      const drag = dragStateRef.current;
+      if (!drag || drag.pointerId !== event.pointerId) {
+        return { wasDrag: false };
+      }
+
+      // Flush any pending rAF position so the final spot is committed.
+      if (drag.rafId !== 0) {
+        window.cancelAnimationFrame(drag.rafId);
+        drag.rafId = 0;
+        if (drag.pending) {
+          commitDragPosition(drag.nodeId, drag.pending.x, drag.pending.y);
+          drag.pending = null;
+        }
+      }
+
+      const wasDrag = drag.moved;
+      try {
+        event.currentTarget.releasePointerCapture(drag.pointerId);
+      } catch {
+        // pointer capture may already be released — safe to ignore.
+      }
+      dragStateRef.current = null;
+      if (draggingId) {
+        setDraggingId(null);
+      }
+      return { wasDrag };
+    },
+    [commitDragPosition, draggingId],
+  );
+
   const clusterFlows = useMemo(() => {
     const claimedAnimatedEdges = new Set<string>();
 
@@ -1484,20 +1735,11 @@ export function ProjectGraph() {
             ? chosen.source
             : chosen.target;
         const end = chosen.source.id === start.id ? chosen.target : chosen.source;
-        const endpoints = getEdgeEndpoints(start, end);
 
         segments.push({
           edge: chosen.edge,
           startId: start.id,
           endId: end.id,
-          startNodeX: start.x,
-          startNodeY: start.y,
-          endNodeX: end.x,
-          endNodeY: end.y,
-          x1: endpoints.x1,
-          y1: endpoints.y1,
-          x2: endpoints.x2,
-          y2: endpoints.y2,
         });
 
         previousNodeId = start.id;
@@ -1572,11 +1814,16 @@ export function ProjectGraph() {
           initial={false}
         >
           <svg
+            ref={svgRef}
             viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`}
             className="absolute inset-0 h-full w-full"
             preserveAspectRatio="xMidYMid meet"
             aria-label="Project graph"
             role="img"
+            style={{
+              touchAction: draggingId ? "none" : "auto",
+              userSelect: draggingId ? "none" : "auto",
+            }}
           >
             <defs>
               <filter
@@ -1623,8 +1870,8 @@ export function ProjectGraph() {
               </filter>
             </defs>
             {edges.map((edge) => {
-              const source = nodeById.get(edge.source)!;
-              const target = nodeById.get(edge.target)!;
+              const source = liveNodeById.get(edge.source)!;
+              const target = liveNodeById.get(edge.target)!;
               const endpoints = getEdgeEndpoints(source, target);
               const highlight = isEdgeHighlighted(edge);
               const edgeId = edgePairKey(edge.source, edge.target);
@@ -1724,17 +1971,17 @@ export function ProjectGraph() {
                   opacityPeak={opacityPeak}
                   shouldReduceMotion={shouldReduceMotion}
                   onNodeArrive={handleTubeArrival}
+                  livePositionsRef={livePositionsRef}
                 />
               );
             })}
-            {nodes.map((node) => {
+            {liveNodes.map((node) => {
               const Icon = node.project.icon;
               const focused = activeId === node.id;
               const arrivalGlow = arrivalGlowById.get(node.id);
               const arriving = Boolean(arrivalGlow);
               const dim = !isHighlighted(node.id);
               const labelLines = splitLabel(node.project.title);
-              const labelY = node.y + NODE_RADIUS + 20;
               const accentColor =
                 activeAccentById.get(node.id) ??
                 nodeAccentById.get(node.id) ??
@@ -1742,6 +1989,7 @@ export function ProjectGraph() {
               const glowColor = accentColor;
               const glowActive = focused;
               const baseGlowActive = focused || arriving;
+              const isDraggingThis = draggingId === node.id;
 
               return (
                 <motion.g
@@ -1758,16 +2006,33 @@ export function ProjectGraph() {
                     },
                   }}
                   style={{
-                    cursor: "pointer",
+                    cursor: isDraggingThis ? "grabbing" : "grab",
                     outline: "none",
-                    transformOrigin: `${node.x}px ${node.y}px`,
+                    touchAction: "none",
+                  }}
+                  onPointerDown={(event) => handleNodePointerDown(event, node)}
+                  onPointerMove={handleNodePointerMove}
+                  onPointerUp={(event) => {
+                    const { wasDrag } = finishDrag(event);
+                    if (!wasDrag) {
+                      setPinnedId((current) =>
+                        current === node.id ? null : node.id,
+                      );
+                    }
+                  }}
+                  onPointerCancel={(event) => {
+                    finishDrag(event);
                   }}
                   onMouseEnter={() => setHoveredId(node.id)}
+                  onMouseLeave={() => {
+                    if (!dragStateRef.current) {
+                      setHoveredId((current) =>
+                        current === node.id ? null : current,
+                      );
+                    }
+                  }}
                   onFocus={() => setHoveredId(node.id)}
                   onBlur={() => setHoveredId(null)}
-                  onClick={() =>
-                    setPinnedId((current) => (current === node.id ? null : node.id))
-                  }
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
                       event.preventDefault();
@@ -1779,145 +2044,206 @@ export function ProjectGraph() {
                   aria-pressed={pinnedId === node.id}
                   aria-label={`Preview ${node.id}`}
                 >
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={NODE_RADIUS + 14}
-                    fill="transparent"
-                    pointerEvents="all"
-                  />
-                  {arrivalGlow && (
+                  {/*
+                    All node visuals share one transform group. SVG translate
+                    is a synchronous DOM write, so dragging the node moves
+                    every halo, ring, icon, and label in perfect lockstep —
+                    framer-motion can no longer auto-tween cx/cy across drag
+                    frames because none of the children have changing
+                    positional props.
+                  */}
+                  <g transform={`translate(${node.x}, ${node.y})`}>
+                    <circle
+                      cx={0}
+                      cy={0}
+                      r={NODE_RADIUS + 14}
+                      fill="transparent"
+                      pointerEvents="all"
+                    />
+                    {arrivalGlow && (
+                      <>
+                        {/* Outer halo — slow, soft, far-reaching */}
+                        <motion.circle
+                          key={`${node.id}-arrival-halo-${arrivalGlow.token}`}
+                          aria-hidden="true"
+                          cx={0}
+                          cy={0}
+                          fill={glowColor}
+                          filter="url(#project-node-glow)"
+                          initial={{ opacity: 0, r: NODE_RADIUS + 6 }}
+                          animate={
+                            shouldReduceMotion
+                              ? { opacity: 0.24, r: NODE_RADIUS + 32 }
+                              : {
+                                  opacity: [0, 0.36, 0],
+                                  r: [NODE_RADIUS + 8, NODE_RADIUS + 50],
+                                }
+                          }
+                          transition={{
+                            opacity: {
+                              duration: shouldReduceMotion
+                                ? GLOW_BLOOM_DURATION_REDUCED
+                                : GLOW_BLOOM_DURATION_HALO,
+                              times: shouldReduceMotion
+                                ? undefined
+                                : [0, 0.28, 1],
+                              ease: GLOW_EASE_EXPO_OUT,
+                            },
+                            r: {
+                              duration: shouldReduceMotion
+                                ? GLOW_BLOOM_DURATION_REDUCED
+                                : GLOW_BLOOM_DURATION_HALO,
+                              ease: GLOW_EASE_EXPO_OUT,
+                            },
+                          }}
+                        />
+                        {/* Middle ring — medium ripple */}
+                        <motion.circle
+                          key={`${node.id}-arrival-mid-${arrivalGlow.token}`}
+                          aria-hidden="true"
+                          cx={0}
+                          cy={0}
+                          fill={glowColor}
+                          filter="url(#project-node-glow)"
+                          initial={{ opacity: 0, r: NODE_RADIUS + 2 }}
+                          animate={
+                            shouldReduceMotion
+                              ? { opacity: 0.3, r: NODE_RADIUS + 18 }
+                              : {
+                                  opacity: [0, 0.5, 0],
+                                  r: [NODE_RADIUS + 4, NODE_RADIUS + 32],
+                                }
+                          }
+                          transition={{
+                            opacity: {
+                              duration: shouldReduceMotion
+                                ? GLOW_BLOOM_DURATION_REDUCED
+                                : GLOW_BLOOM_DURATION_MID,
+                              times: shouldReduceMotion
+                                ? undefined
+                                : [0, 0.24, 1],
+                              ease: GLOW_EASE_EXPO_OUT,
+                            },
+                            r: {
+                              duration: shouldReduceMotion
+                                ? GLOW_BLOOM_DURATION_REDUCED
+                                : GLOW_BLOOM_DURATION_MID,
+                              ease: GLOW_EASE_EXPO_OUT,
+                            },
+                          }}
+                        />
+                        {/* Bright core — the "pop" right at the node */}
+                        <motion.circle
+                          key={`${node.id}-arrival-core-${arrivalGlow.token}`}
+                          aria-hidden="true"
+                          cx={0}
+                          cy={0}
+                          fill={glowColor}
+                          initial={{ opacity: 0, r: NODE_RADIUS - 1 }}
+                          animate={
+                            shouldReduceMotion
+                              ? { opacity: 0.5, r: NODE_RADIUS + 8 }
+                              : {
+                                  opacity: [0, 0.72, 0],
+                                  r: [NODE_RADIUS + 1, NODE_RADIUS + 16],
+                                }
+                          }
+                          transition={{
+                            opacity: {
+                              duration: shouldReduceMotion
+                                ? GLOW_BLOOM_DURATION_REDUCED
+                                : GLOW_BLOOM_DURATION_CORE,
+                              times: shouldReduceMotion
+                                ? undefined
+                                : [0, 0.32, 1],
+                              ease: GLOW_EASE_EXPO_OUT,
+                            },
+                            r: {
+                              duration: shouldReduceMotion
+                                ? GLOW_BLOOM_DURATION_REDUCED
+                                : GLOW_BLOOM_DURATION_CORE,
+                              ease: GLOW_EASE_EXPO_OUT,
+                            },
+                          }}
+                        />
+                      </>
+                    )}
                     <motion.circle
-                      key={`${node.id}-arrival-outer-${arrivalGlow.token}`}
                       aria-hidden="true"
-                      cx={node.x}
-                      cy={node.y}
+                      cx={0}
+                      cy={0}
+                      r={NODE_RADIUS + 24}
                       fill={glowColor}
                       filter="url(#project-node-glow)"
-                      initial={{ opacity: 0, r: NODE_RADIUS + 15 }}
-                      animate={
-                        shouldReduceMotion
-                          ? { opacity: 0.26, r: NODE_RADIUS + 28 }
-                          : {
-                              opacity: [0, 0.34, 0.24, 0],
-                              r: [
-                                NODE_RADIUS + 16,
-                                NODE_RADIUS + 28,
-                                NODE_RADIUS + 34,
-                                NODE_RADIUS + 40,
-                              ],
-                            }
-                      }
+                      animate={{
+                        opacity: baseGlowActive ? 0.32 : 0,
+                      }}
                       transition={{
-                        duration: shouldReduceMotion ? 0.01 : 1.18,
-                        times: shouldReduceMotion ? undefined : [0, 0.28, 0.68, 1],
-                        ease: "easeInOut",
+                        duration: shouldReduceMotion ? 0.01 : 0.55,
+                        ease: GLOW_EASE_EXPO_OUT,
                       }}
                     />
-                  )}
-                  {arrivalGlow && (
                     <motion.circle
-                      key={`${node.id}-arrival-core-${arrivalGlow.token}`}
                       aria-hidden="true"
-                      cx={node.x}
-                      cy={node.y}
+                      cx={0}
+                      cy={0}
+                      r={NODE_RADIUS + 14}
                       fill={glowColor}
-                      initial={{ opacity: 0, r: NODE_RADIUS + 2 }}
-                      animate={
-                        shouldReduceMotion
-                          ? { opacity: 0.18, r: NODE_RADIUS + 12 }
-                          : {
-                              opacity: [0, 0.2, 0.16, 0],
-                              r: [
-                                NODE_RADIUS + 3,
-                                NODE_RADIUS + 12,
-                                NODE_RADIUS + 16,
-                                NODE_RADIUS + 20,
-                              ],
-                            }
-                      }
+                      animate={{
+                        opacity: baseGlowActive ? 0.2 : 0,
+                      }}
                       transition={{
-                        duration: shouldReduceMotion ? 0.01 : 1.05,
-                        times: shouldReduceMotion ? undefined : [0, 0.22, 0.64, 1],
-                        ease: "easeInOut",
+                        duration: shouldReduceMotion ? 0.01 : 0.55,
+                        ease: GLOW_EASE_EXPO_OUT,
                       }}
                     />
-                  )}
-                  <motion.circle
-                    aria-hidden="true"
-                    cx={node.x}
-                    cy={node.y}
-                    r={NODE_RADIUS + 24}
-                    fill={glowColor}
-                    filter="url(#project-node-glow)"
-                    animate={{
-                      opacity: baseGlowActive ? 0.32 : 0,
-                    }}
-                    transition={{
-                      duration: shouldReduceMotion ? 0.01 : 0.55,
-                      ease: "easeInOut",
-                    }}
-                  />
-                  <motion.circle
-                    aria-hidden="true"
-                    cx={node.x}
-                    cy={node.y}
-                    r={NODE_RADIUS + 14}
-                    fill={glowColor}
-                    animate={{
-                      opacity: baseGlowActive ? 0.2 : 0,
-                    }}
-                    transition={{
-                      duration: shouldReduceMotion ? 0.01 : 0.55,
-                      ease: "easeInOut",
-                    }}
-                  />
 
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={NODE_RADIUS}
-                    fill={glowActive ? glowColor : "rgba(255,255,255,0.045)"}
-                    fillOpacity={glowActive ? 0.24 : 1}
-                    stroke={glowActive ? glowColor : dim ? "rgba(255,255,255,0.08)" : accentColor}
-                    strokeOpacity={glowActive ? 0.92 : dim ? 1 : 0.42}
-                    strokeWidth={glowActive ? 2 : 1}
-                  />
-                  <Icon
-                    x={node.x - 8.75}
-                    y={node.y - 8.75}
-                    width={17.5}
-                    height={17.5}
-                    color={focused ? accentColor : "#d4d4d8"}
-                    strokeWidth={2}
-                    aria-hidden="true"
-                    pointerEvents="none"
-                  />
-                  <text
-                    x={node.x}
-                    y={labelY}
-                    textAnchor="middle"
-                    className={[
-                      "pointer-events-none fill-current font-mono drop-shadow-[0_1px_6px_rgba(0,0,0,0.55)] transition-colors duration-300",
-                      focused
-                        ? "text-zinc-100"
-                        : dim
-                          ? "text-zinc-600"
-                          : "text-zinc-400",
-                    ].join(" ")}
-                    fontSize={12}
-                    fontWeight={focused ? 700 : 500}
-                  >
-                    {labelLines.map((line, lineIndex) => (
-                      <tspan
-                        key={line}
-                        x={node.x}
-                        dy={lineIndex === 0 ? 0 : 14}
-                      >
-                        {line}
-                      </tspan>
-                    ))}
-                  </text>
+                    <circle
+                      cx={0}
+                      cy={0}
+                      r={NODE_RADIUS}
+                      fill={glowActive ? glowColor : "rgba(255,255,255,0.045)"}
+                      fillOpacity={glowActive ? 0.24 : 1}
+                      stroke={glowActive ? glowColor : dim ? "rgba(255,255,255,0.08)" : accentColor}
+                      strokeOpacity={glowActive ? 0.92 : dim ? 1 : 0.42}
+                      strokeWidth={glowActive ? 2 : 1}
+                    />
+                    <Icon
+                      x={-8.75}
+                      y={-8.75}
+                      width={17.5}
+                      height={17.5}
+                      color={focused ? accentColor : "#d4d4d8"}
+                      strokeWidth={2}
+                      aria-hidden="true"
+                      pointerEvents="none"
+                    />
+                    <text
+                      x={0}
+                      y={NODE_RADIUS + 20}
+                      textAnchor="middle"
+                      className={[
+                        "pointer-events-none fill-current font-mono drop-shadow-[0_1px_6px_rgba(0,0,0,0.55)] transition-colors duration-300",
+                        focused
+                          ? "text-zinc-100"
+                          : dim
+                            ? "text-zinc-600"
+                            : "text-zinc-400",
+                      ].join(" ")}
+                      fontSize={12}
+                      fontWeight={focused ? 700 : 500}
+                    >
+                      {labelLines.map((line, lineIndex) => (
+                        <tspan
+                          key={line}
+                          x={0}
+                          dy={lineIndex === 0 ? 0 : 14}
+                        >
+                          {line}
+                        </tspan>
+                      ))}
+                    </text>
+                  </g>
                 </motion.g>
               );
             })}
@@ -1930,14 +2256,6 @@ export function ProjectGraph() {
       </div>
     </motion.div>
   );
-}
-
-function lerp(start: number, end: number, amount: number) {
-  return start + (end - start) * amount;
-}
-
-function easeInOutSine(amount: number) {
-  return 0.5 - Math.cos(Math.PI * amount) / 2;
 }
 
 function setSvgAttr(
@@ -1959,44 +2277,109 @@ function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));
 }
 
-function setGradientStop(
+// Smoothstep: cubic ease that yields a soft, organic edge. Used for the
+// envelope of the pressure wave near segment boundaries.
+function smoothstep(value: number) {
+  const t = clamp01(value);
+  return t * t * (3 - 2 * t);
+}
+
+// Wave profile — a *Hann window* (raised cosine). C¹-continuous everywhere,
+// which is the technical reason the wave looks "silky": the derivative is
+// zero at the very edge of the bell, so the wave fades to invisible without
+// any perceptible ramp-off seam. The flat-core variant of our previous
+// profile had a derivative kink right at `dist == spread` that contributed
+// to the slightly "stepped" feel even when the math looked smooth on paper.
+//
+// `spread` is the inner core where intensity is held at 1.0 (gives the
+// pulse a bit of body). `softSpread` is where the wave falls fully to 0.
+function waveProfile(
+  position: number,
+  center: number,
+  spread: number,
+  softSpread: number,
+) {
+  const dist = Math.abs(position - center);
+  if (dist >= softSpread) {
+    return 0;
+  }
+  if (dist <= spread) {
+    return 1;
+  }
+  const t = (dist - spread) / Math.max(softSpread - spread, 1e-4);
+  // Half of one cosine period — peaks at 1 when t=0, smoothly to 0 when t=1,
+  // and crucially the derivative is 0 at both ends.
+  return (1 + Math.cos(Math.PI * t)) * 0.5;
+}
+
+function setStop(
   element: SVGStopElement | null,
   offset: number,
   opacity: number,
+  color: string,
 ) {
   if (!element) {
     return;
   }
-
   element.setAttribute("offset", `${(clamp01(offset) * 100).toFixed(2)}%`);
   element.setAttribute("stop-opacity", clamp01(opacity).toFixed(3));
+  element.setAttribute("stop-color", color);
 }
+
+// One slice of the wave system — owns a single segment's `<line>`, gradient,
+// and stop refs. The parent flow component drives all slices from one rAF.
+type SegmentSliceRefs = {
+  tube: SVGLineElement | null;
+  channel: SVGLineElement | null;
+  gradient: SVGLinearGradientElement | null;
+  stops: (SVGStopElement | null)[];
+};
+
+// Fixed offsets used for the 7 gradient stops. We sample the wave profile at
+// each one rather than moving the offsets — this lets the wave bleed past
+// segment ends (center > 1 or < 0) without SVG clipping the stops.
+const STOP_OFFSETS = [0, 1 / 6, 2 / 6, 3 / 6, 4 / 6, 5 / 6, 1] as const;
 
 function GraphTubeFlow({
   flow,
   opacityPeak,
   shouldReduceMotion,
   onNodeArrive,
+  livePositionsRef,
 }: {
   flow: ClusterFlow;
   opacityPeak: number;
   shouldReduceMotion: boolean | null;
   onNodeArrive: (nodeId: string) => void;
+  livePositionsRef: React.MutableRefObject<Map<string, LivePosition>>;
 }) {
   const reduced = Boolean(shouldReduceMotion);
-  const segmentDuration = reduced ? 3.8 : 1.72;
+  const segmentDuration = reduced
+    ? WAVE_SEGMENT_DURATION_REDUCED
+    : WAVE_SEGMENT_DURATION;
   const intensity = reduced ? 0.55 : 1;
-  const gradientId = `project-tube-pressure-${flow.cluster}`;
-  const tubeRef = useRef<SVGLineElement | null>(null);
-  const channelRef = useRef<SVGLineElement | null>(null);
-  const gradientRef = useRef<SVGLinearGradientElement | null>(null);
-  const stop0Ref = useRef<SVGStopElement | null>(null);
-  const stop1Ref = useRef<SVGStopElement | null>(null);
-  const stop2Ref = useRef<SVGStopElement | null>(null);
-  const stop3Ref = useRef<SVGStopElement | null>(null);
-  const stop4Ref = useRef<SVGStopElement | null>(null);
-  const stop5Ref = useRef<SVGStopElement | null>(null);
-  const stop6Ref = useRef<SVGStopElement | null>(null);
+  const gradientPrefix = `project-tube-pressure-${flow.cluster}`;
+  const segments = flow.segments;
+  // Allocate one ref bag per segment. Recreated when segment count changes,
+  // which only happens when the static topology rebuilds (never during drag).
+  const sliceRefs = useRef<SegmentSliceRefs[]>([]);
+  if (sliceRefs.current.length !== segments.length) {
+    sliceRefs.current = segments.map(() => ({
+      tube: null,
+      channel: null,
+      gradient: null,
+      stops: Array(STOP_OFFSETS.length).fill(null),
+    }));
+  }
+
+  // Track the latest opacity peak / intensity so we can pick them up inside
+  // the rAF loop without restarting it.
+  const opacityPeakRef = useRef(opacityPeak);
+  const intensityRef = useRef(intensity);
+  const onArriveRef = useRef(onNodeArrive);
+  opacityPeakRef.current = opacityPeak;
+  intensityRef.current = intensity;
+  onArriveRef.current = onNodeArrive;
 
   useEffect(() => {
     let frame = 0;
@@ -2008,71 +2391,169 @@ function GraphTubeFlow({
         return;
       }
 
-      const segments = flow.segments;
-
       if (segments.length === 0) {
         return;
       }
 
-      const elapsedSeconds = time / 1000 - flow.delay;
+      const peakOpacity = opacityPeakRef.current;
+      const waveIntensity = intensityRef.current;
+      const elapsedSeconds = Math.max(0, time / 1000 - flow.delay);
       const totalDuration = segmentDuration * segments.length;
-      const absoluteSegmentProgress = elapsedSeconds / segmentDuration;
-      const routeProgress =
-        ((elapsedSeconds % totalDuration) + totalDuration) % totalDuration;
-      const segmentIndex =
-        Math.floor(routeProgress / segmentDuration) % segments.length;
-      const localProgress = (routeProgress % segmentDuration) / segmentDuration;
-      const segment = segments[segmentIndex];
-      const dx = segment.x2 - segment.x1;
-      const dy = segment.y2 - segment.y1;
-      const distance = Math.max(Math.hypot(dx, dy), 1);
-      const eased = easeInOutSine(localProgress);
-      const cx = lerp(segment.x1, segment.x2, eased);
-      const cy = lerp(segment.y1, segment.y2, eased);
-      const pressure = Math.sin(Math.PI * localProgress) * intensity;
-      const center =
-        Math.hypot(cx - segment.x1, cy - segment.y1) / distance;
-      const spread = clamp((22 + pressure * 34) / distance, 0.045, 0.26);
-      const softSpread = clamp(spread * 2.2, 0.09, 0.42);
-      const shoulder = opacityPeak * (0.16 + pressure * 0.28);
-      const peak = opacityPeak * (0.52 + pressure * 0.36);
-      const arrivalKey = `${Math.floor(absoluteSegmentProgress)}-${segment.endId}`;
+      // ─── Ping-pong route progression ─────────────────────────────────────
+      // The wave travels forward through every segment, then *bounces back*
+      // along the same route (in reverse) when it hits the terminal node.
+      // This is what makes a route with no "next" project feel alive
+      // instead of teleporting back to the start.
+      const cycleDuration = 2 * totalDuration;
+      const cycleNumber = Math.floor(elapsedSeconds / cycleDuration);
+      const cyclePos = elapsedSeconds - cycleNumber * cycleDuration;
+      const goingForward = cyclePos < totalDuration;
+      const rawProgress = goingForward
+        ? cyclePos
+        : cycleDuration - cyclePos;
+      // Gentle pendulum-style ease across the whole traversal: slope is 0 at
+      // both endpoints (the bounce points) and peaks at 1.5× linear speed in
+      // the middle. The integral is preserved, so the wave still completes a
+      // full traversal in `totalDuration` — it never feels *slower* — but
+      // the velocity reversal at the terminal is no longer instantaneous,
+      // which kills the last bit of perceived stutter at bounces.
+      const linearT = clamp01(rawProgress / totalDuration);
+      const easedT = WAVE_BOUNCE_EASE > 0
+        ? linearT * linearT * (3 - 2 * linearT) * WAVE_BOUNCE_EASE +
+          linearT * (1 - WAVE_BOUNCE_EASE)
+        : linearT;
+      const routeProgress = easedT * totalDuration;
+      const routeUnits = clamp(
+        routeProgress / segmentDuration,
+        0,
+        segments.length,
+      );
+      const activeIndex = Math.min(
+        Math.floor(routeUnits),
+        segments.length - 1,
+      );
+      const localProgress = routeUnits - activeIndex;
 
-      if (localProgress > 0.86 && arrivalKey !== lastArrivalKey) {
+      // Direction-aware arrival glow: when going forward, fire as the wave
+      // approaches the segment's *end* node; when going backward, fire as
+      // it approaches the segment's *start* node. The arrivalKey encodes
+      // cycle + segment + direction so a bounce in/out of a terminal node
+      // still triggers a fresh bloom on each pass instead of silently
+      // skipping it.
+      const arrivalThreshold = goingForward
+        ? localProgress > 0.78
+        : localProgress < 0.22;
+      const arrivalNodeId = goingForward
+        ? segments[activeIndex].endId
+        : segments[activeIndex].startId;
+      const arrivalKey = `${cycleNumber}-${activeIndex}-${goingForward ? "f" : "b"}`;
+      if (arrivalThreshold && arrivalKey !== lastArrivalKey) {
         lastArrivalKey = arrivalKey;
-        onNodeArrive(segment.endId);
+        onArriveRef.current(arrivalNodeId);
       }
 
-      setSvgAttr(gradientRef.current, "x1", segment.x1);
-      setSvgAttr(gradientRef.current, "y1", segment.y1);
-      setSvgAttr(gradientRef.current, "x2", segment.x2);
-      setSvgAttr(gradientRef.current, "y2", segment.y2);
-      setSvgAttr(channelRef.current, "x1", segment.x1);
-      setSvgAttr(channelRef.current, "y1", segment.y1);
-      setSvgAttr(channelRef.current, "x2", segment.x2);
-      setSvgAttr(channelRef.current, "y2", segment.y2);
-      setSvgAttr(channelRef.current, "stroke", segment.edge.color);
-      setSvgAttr(channelRef.current, "opacity", opacityPeak * 0.075);
-      setSvgAttr(tubeRef.current, "stroke-width", 5.4 + pressure * 9.8);
-      setSvgAttr(tubeRef.current, "opacity", opacityPeak * (0.76 + pressure * 0.18));
-      setSvgAttr(tubeRef.current, "x1", segment.x1);
-      setSvgAttr(tubeRef.current, "y1", segment.y1);
-      setSvgAttr(tubeRef.current, "x2", segment.x2);
-      setSvgAttr(tubeRef.current, "y2", segment.y2);
-      setGradientStop(stop0Ref.current, 0, 0);
-      setGradientStop(stop1Ref.current, center - softSpread, 0);
-      setGradientStop(stop2Ref.current, center - spread, shoulder);
-      setGradientStop(stop3Ref.current, center, peak);
-      setGradientStop(stop4Ref.current, center + spread, shoulder);
-      setGradientStop(stop5Ref.current, center + softSpread, 0);
-      setGradientStop(stop6Ref.current, 1, 0);
-      setSvgAttr(stop0Ref.current, "stop-color", segment.edge.color);
-      setSvgAttr(stop1Ref.current, "stop-color", segment.edge.color);
-      setSvgAttr(stop2Ref.current, "stop-color", segment.edge.color);
-      setSvgAttr(stop3Ref.current, "stop-color", segment.edge.color);
-      setSvgAttr(stop4Ref.current, "stop-color", segment.edge.color);
-      setSvgAttr(stop5Ref.current, "stop-color", segment.edge.color);
-      setSvgAttr(stop6Ref.current, "stop-color", segment.edge.color);
+      const positions = livePositionsRef.current;
+      const overlap = WAVE_HANDOFF_OVERLAP;
+
+      for (let i = 0; i < segments.length; i++) {
+        const seg = segments[i];
+        const slice = sliceRefs.current[i];
+        if (!slice) {
+          continue;
+        }
+
+        const startNode = positions.get(seg.startId);
+        const endNode = positions.get(seg.endId);
+        if (!startNode || !endNode) {
+          continue;
+        }
+
+        const endpoints = getEdgeEndpoints(
+          startNode as unknown as Node,
+          endNode as unknown as Node,
+        );
+
+        // Update segment-line endpoints live so dragging a node carries the
+        // wave with it.
+        setSvgAttr(slice.tube, "x1", endpoints.x1);
+        setSvgAttr(slice.tube, "y1", endpoints.y1);
+        setSvgAttr(slice.tube, "x2", endpoints.x2);
+        setSvgAttr(slice.tube, "y2", endpoints.y2);
+        setSvgAttr(slice.channel, "x1", endpoints.x1);
+        setSvgAttr(slice.channel, "y1", endpoints.y1);
+        setSvgAttr(slice.channel, "x2", endpoints.x2);
+        setSvgAttr(slice.channel, "y2", endpoints.y2);
+        setSvgAttr(slice.gradient, "x1", endpoints.x1);
+        setSvgAttr(slice.gradient, "y1", endpoints.y1);
+        setSvgAttr(slice.gradient, "x2", endpoints.x2);
+        setSvgAttr(slice.gradient, "y2", endpoints.y2);
+
+        // Compute this segment's relative position to the wave head. Wave
+        // moves at constant velocity along the route in ping-pong fashion,
+        // so we no longer need any wrap-around — the wave can never appear
+        // at segment 0 while it's near segment N-1 (the bounce-back keeps
+        // it on the same continuous path).
+        // `center` is the wave's position expressed in this segment's
+        // [0..1] space. Negative means "wave is approaching from before
+        // segment start", >1 means "wave has already passed segment end".
+        const center = activeIndex - i + localProgress;
+
+        // Decide if this segment should render anything. Anything within the
+        // overlap window on either side gets a fading wave for seamless
+        // handoff at junction nodes.
+        const visible =
+          center > -overlap - WAVE_SOFT_SPREAD &&
+          center < 1 + overlap + WAVE_SOFT_SPREAD;
+
+        if (!visible) {
+          // Dormant — clear all stops and hide the line.
+          for (const stop of slice.stops) {
+            setSvgAttr(stop, "stop-opacity", 0);
+          }
+          setSvgAttr(slice.tube, "opacity", 0);
+          setSvgAttr(slice.channel, "opacity", 0);
+          continue;
+        }
+
+        // Boundary envelope — full intensity in the segment's body, smoothly
+        // ramping to 0 across the overlap region. This is what makes the
+        // wave "leak" naturally between adjacent segments at shared nodes.
+        let envelope = 1;
+        if (center < 0) {
+          envelope = smoothstep(1 + center / overlap);
+        } else if (center > 1) {
+          envelope = smoothstep(1 - (center - 1) / overlap);
+        }
+
+        const peak = peakOpacity * WAVE_PEAK_OPACITY * waveIntensity * envelope;
+        const tubeOpacity =
+          peakOpacity * (0.55 + 0.35 * envelope) * waveIntensity;
+        const tubeWidth =
+          WAVE_STROKE_BASE +
+          (WAVE_STROKE_PEAK - WAVE_STROKE_BASE) * envelope;
+        const color = seg.edge.color;
+
+        setSvgAttr(slice.tube, "opacity", tubeOpacity);
+        setSvgAttr(slice.tube, "stroke-width", tubeWidth);
+        setSvgAttr(
+          slice.channel,
+          "opacity",
+          peakOpacity * WAVE_CHANNEL_OPACITY * envelope,
+        );
+        setSvgAttr(slice.channel, "stroke", color);
+
+        // Sample the bell-curve wave profile at each fixed gradient stop.
+        for (let s = 0; s < STOP_OFFSETS.length; s++) {
+          const offset = STOP_OFFSETS[s];
+          const profile = waveProfile(
+            offset,
+            center,
+            WAVE_SPREAD,
+            WAVE_SOFT_SPREAD,
+          );
+          setStop(slice.stops[s], offset, peak * profile, color);
+        }
+      }
 
       frame = window.requestAnimationFrame(draw);
     };
@@ -2083,16 +2564,9 @@ function GraphTubeFlow({
       mounted = false;
       window.cancelAnimationFrame(frame);
     };
-  }, [
-    flow,
-    intensity,
-    onNodeArrive,
-    opacityPeak,
-    segmentDuration,
-  ]);
-  const firstSegment = flow.segments[0];
+  }, [flow.delay, livePositionsRef, segmentDuration, segments]);
 
-  if (!firstSegment) {
+  if (segments.length === 0) {
     return null;
   }
 
@@ -2103,48 +2577,57 @@ function GraphTubeFlow({
       style={{ mixBlendMode: "screen" }}
     >
       <defs>
-        <linearGradient
-          ref={gradientRef}
-          id={gradientId}
-          x1={firstSegment.x1}
-          y1={firstSegment.y1}
-          x2={firstSegment.x2}
-          y2={firstSegment.y2}
-          gradientUnits="userSpaceOnUse"
-        >
-          <stop ref={stop0Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0" />
-          <stop ref={stop1Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0" />
-          <stop ref={stop2Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0.16" />
-          <stop ref={stop3Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0.52" />
-          <stop ref={stop4Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0.16" />
-          <stop ref={stop5Ref} offset="0%" stopColor={firstSegment.edge.color} stopOpacity="0" />
-          <stop ref={stop6Ref} offset="100%" stopColor={firstSegment.edge.color} stopOpacity="0" />
-        </linearGradient>
+        {segments.map((seg, i) => (
+          <linearGradient
+            key={`${seg.startId}-${seg.endId}-grad-${i}`}
+            id={`${gradientPrefix}-${i}`}
+            ref={(el) => {
+              const slice = sliceRefs.current[i];
+              if (slice) slice.gradient = el;
+            }}
+            gradientUnits="userSpaceOnUse"
+          >
+            {STOP_OFFSETS.map((offset, s) => (
+              <stop
+                key={s}
+                ref={(el) => {
+                  const slice = sliceRefs.current[i];
+                  if (slice) slice.stops[s] = el;
+                }}
+                offset={`${offset * 100}%`}
+                stopColor={seg.edge.color}
+                stopOpacity="0"
+              />
+            ))}
+          </linearGradient>
+        ))}
       </defs>
-      <line
-        ref={channelRef}
-        x1={firstSegment.x1}
-        y1={firstSegment.y1}
-        x2={firstSegment.x2}
-        y2={firstSegment.y2}
-        stroke={firstSegment.edge.color}
-        strokeWidth={3.2}
-        strokeLinecap="round"
-        opacity={opacityPeak * 0.075}
-        filter="url(#project-signal-glow)"
-      />
-      <line
-        ref={tubeRef}
-        x1={firstSegment.x1}
-        y1={firstSegment.y1}
-        x2={firstSegment.x2}
-        y2={firstSegment.y2}
-        stroke={`url(#${gradientId})`}
-        strokeWidth={5.4}
-        strokeLinecap="round"
-        opacity={opacityPeak * 0.72}
-        filter="url(#project-signal-glow)"
-      />
+      {segments.map((seg, i) => (
+        <g key={`${seg.startId}-${seg.endId}-${i}`}>
+          <line
+            ref={(el) => {
+              const slice = sliceRefs.current[i];
+              if (slice) slice.channel = el;
+            }}
+            stroke={seg.edge.color}
+            strokeWidth={3.2}
+            strokeLinecap="round"
+            opacity={0}
+            filter="url(#project-signal-glow)"
+          />
+          <line
+            ref={(el) => {
+              const slice = sliceRefs.current[i];
+              if (slice) slice.tube = el;
+            }}
+            stroke={`url(#${gradientPrefix}-${i})`}
+            strokeWidth={WAVE_STROKE_BASE}
+            strokeLinecap="round"
+            opacity={0}
+            filter="url(#project-signal-glow)"
+          />
+        </g>
+      ))}
     </g>
   );
 }
