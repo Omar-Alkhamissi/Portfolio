@@ -74,19 +74,12 @@
            bg-clip-text text-transparent;
   }
 
-  .link {
-    @apply relative inline-flex items-center gap-1 text-zinc-300
-           transition-colors hover:text-white;
-  }
-
   .badge {
     @apply inline-flex items-center rounded-full border border-white/[0.08]
            bg-white/[0.03] px-2.5 py-1 font-mono text-[11px]
            uppercase tracking-wider text-zinc-300;
   }
 
-  /* Static grid layered above the animated canvas — gives that
-     "blueprint over deep-space" vibe without fighting the canvas. */
   .bg-grid {
     background-image:
       linear-gradient(to right, rgba(125, 211, 252, 0.045) 1px, transparent 1px),

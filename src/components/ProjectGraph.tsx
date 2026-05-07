@@ -181,9 +181,12 @@ const WAVE_CHANNEL_OPACITY = 0.018;
 // the project badge. Clipped to the badge face, so it reads as a ping without
 // an outer ripple ring.
 const BADGE_PING_DURATION = 1.08;
-const BADGE_PING_DURATION_REDUCED = 0.01;
+const BADGE_PING_DURATION_REDUCED = 0.72;
 const BADGE_PING_FACE_OPACITY = 0.54;
 const BADGE_PING_TIMES = [0, 0.08, 0.18, 0.32, 0.46, 0.58, 0.72, 0.86, 1];
+const BADGE_POP_TIMES = [0, 0.16, 0.38, 0.68, 1];
+const BADGE_POP_RADIUS = 1.05;
+const BADGE_POP_STROKE = 0.44;
 // Used for small hover/focus glow and the internal badge ping.
 const BLOOM_EASE_EXPO_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const BLOOM_EASE_SLOW_IN_OUT: [number, number, number, number] = [0.45, 0, 0.2, 1];
@@ -578,8 +581,8 @@ const PROJECT_POSITION_OVERRIDES: Record<string, LivePosition> = {
   "Real-Time Room Chat App": { x: 99, y: 213 },
   "Bookshelf Mobile App": { x: 159, y: 399 },
   "Travel Advisory Tracker": { x: 334, y: 202 },
-  "Debug My Heart": { x: 320, y: 349 },
-  "Fragrance E-Commerce": { x: 419, y: 255 },
+  "Debug My Heart": { x: 289, y: 361 },
+  "Fragrance E-Commerce": { x: 410, y: 86 },
   "Wordle gRPC Microservices": { x: 512, y: 417 },
   "Fast Food Ordering": { x: 743, y: 171 },
   "Employee Helpdesk Portal": { x: 989, y: 347 },
@@ -592,7 +595,7 @@ const PROJECT_POSITION_OVERRIDES: Record<string, LivePosition> = {
   "Family Genealogy Database": { x: 1070, y: 745 },
   "Data Warehouse ETL Pipeline": { x: 897, y: 655 },
   "Order Management System": { x: 888, y: 468 },
-  "Document Factory": { x: 849, y: 565 },
+  "Document Factory": { x: 817, y: 619 },
   "Global Economics Reporter": { x: 849, y: 752 },
   "Coffee Shop POS": { x: 710, y: 795 },
   "Collaborative Drawing App": { x: 588, y: 680 },
@@ -1883,9 +1886,9 @@ export function ProjectGraph() {
   const shouldReduceMotion = useReducedMotion();
   const performanceProfile = useAdaptivePerformanceProfile();
   const diagnostics = usePerformanceDiagnosticFlags();
-  const graphMotionReduced = Boolean(
-    shouldReduceMotion || diagnostics.staticMode || dragPerfActive,
-  );
+  const prefersReducedMotion = Boolean(shouldReduceMotion);
+  const graphMotionPaused = Boolean(diagnostics.staticMode || dragPerfActive);
+  const graphMotionReduced = graphMotionPaused;
   const debugState = usePerformanceDebugState();
   const graphDebugEnabled = debugState.enabled;
   const graphQuality = useMemo(
@@ -1900,6 +1903,7 @@ export function ProjectGraph() {
             glowStrokeScale: 0.42,
             waveIntensityScale: 0.7,
             useFilteredEdgeGlow: false,
+            useFilteredWaveGlow: false,
             useBlendMode: false,
           }
         : performanceProfile.graph,
@@ -1994,6 +1998,11 @@ export function ProjectGraph() {
     }
   }, [hoveredId, pinnedId]);
 
+  const setGraphDragPerfMode = useCallback((active: boolean) => {
+    setDragPerfActive(active);
+    announceGraphDragPerformance(active);
+  }, []);
+
   useEffect(
     () => () => {
       for (const timer of arrivalPingTimers.current.values()) {
@@ -2003,11 +2012,6 @@ export function ProjectGraph() {
     },
     [],
   );
-
-  const setGraphDragPerfMode = useCallback((active: boolean) => {
-    setDragPerfActive(active);
-    announceGraphDragPerformance(active);
-  }, []);
 
   const handleTubeArrival = useCallback((arrival: NodeArrival) => {
     const token = window.performance.now();
@@ -2991,7 +2995,7 @@ export function ProjectGraph() {
                   key={flow.id}
                   flow={flow}
                   opacityPeak={opacityPeak}
-                  shouldReduceMotion={graphMotionReduced}
+                  shouldReduceMotion={prefersReducedMotion}
                   onNodeArrive={handleTubeArrival}
                   nodeAccentById={nodeAccentById}
                   livePositionsRef={livePositionsRef}
@@ -3016,7 +3020,7 @@ export function ProjectGraph() {
               const safeNodeId = toSvgId(node.id);
               const pingClipId = `project-node-ping-clip-${safeNodeId}`;
               const isDraggingThis = draggingId === node.id;
-              const receiveActive = Boolean(arrivalPing) && !graphMotionReduced;
+              const receiveActive = Boolean(arrivalPing) && !graphMotionPaused;
               const badgeFillOpacity = glowActive ? 0.22 : 1;
               const badgeStroke = glowActive
                 ? glowColor
@@ -3153,7 +3157,15 @@ export function ProjectGraph() {
                       fill={glowActive ? glowColor : "rgba(255,255,255,0.045)"}
                       initial={false}
                       animate={{
-                        r: NODE_RADIUS,
+                        r: receiveActive
+                          ? [
+                              NODE_RADIUS,
+                              NODE_RADIUS + BADGE_POP_RADIUS * 0.58,
+                              NODE_RADIUS + BADGE_POP_RADIUS,
+                              NODE_RADIUS + BADGE_POP_RADIUS * 0.28,
+                              NODE_RADIUS,
+                            ]
+                          : NODE_RADIUS,
                         fillOpacity: receiveActive
                           ? [
                               badgeFillOpacity,
@@ -3171,11 +3183,26 @@ export function ProjectGraph() {
                               badgeStrokeOpacity,
                             ]
                           : badgeStrokeOpacity,
-                        strokeWidth: badgeStrokeWidth,
+                        strokeWidth: receiveActive
+                          ? [
+                              badgeStrokeWidth,
+                              badgeStrokeWidth + BADGE_POP_STROKE * 0.44,
+                              badgeStrokeWidth + BADGE_POP_STROKE,
+                              badgeStrokeWidth + BADGE_POP_STROKE * 0.22,
+                              badgeStrokeWidth,
+                            ]
+                          : badgeStrokeWidth,
                       }}
                       transition={{
                         duration: graphMotionReduced ? 0.01 : 1.15,
                         ease: BLOOM_EASE_SLOW_IN_OUT,
+                        r: receiveActive
+                          ? {
+                              duration: BADGE_PING_DURATION,
+                              times: BADGE_POP_TIMES,
+                              ease: "linear",
+                            }
+                          : undefined,
                         fillOpacity: receiveActive
                           ? {
                               duration: BADGE_PING_DURATION,
@@ -3190,6 +3217,13 @@ export function ProjectGraph() {
                               ease: "linear",
                             }
                           : undefined,
+                        strokeWidth: receiveActive
+                          ? {
+                              duration: BADGE_PING_DURATION,
+                              times: BADGE_POP_TIMES,
+                              ease: "linear",
+                            }
+                          : undefined,
                       }}
                     />
                     {arrivalPing && (
@@ -3197,7 +3231,7 @@ export function ProjectGraph() {
                         key={`${node.id}-ping-${arrivalPing.token}`}
                         color={pingColor}
                         clipPathId={pingClipId}
-                        shouldReduceMotion={graphMotionReduced}
+                        shouldReduceMotion={prefersReducedMotion}
                       />
                     )}
                     <Icon
@@ -3371,6 +3405,20 @@ function GraphPerformanceOverlay({
   );
 }
 
+const svgAttrCache = new WeakMap<SVGElement, Map<string, string>>();
+
+function formatSvgAttr(name: string, value: number | string) {
+  if (typeof value !== "number") {
+    return value;
+  }
+
+  if (name === "opacity" || name === "stop-opacity") {
+    return value.toFixed(3);
+  }
+
+  return value.toFixed(2);
+}
+
 function setSvgAttr(
   element: SVGElement | null,
   name: string,
@@ -3380,10 +3428,20 @@ function setSvgAttr(
     return;
   }
 
-  element.setAttribute(
-    name,
-    typeof value === "number" ? value.toFixed(2) : value,
-  );
+  const nextValue = formatSvgAttr(name, value);
+  let cache = svgAttrCache.get(element);
+
+  if (!cache) {
+    cache = new Map();
+    svgAttrCache.set(element, cache);
+  }
+
+  if (cache.get(name) === nextValue) {
+    return;
+  }
+
+  cache.set(name, nextValue);
+  element.setAttribute(name, nextValue);
 }
 
 function clamp01(value: number) {
@@ -3442,17 +3500,11 @@ function waveProfile(
 
 function setStop(
   element: SVGStopElement | null,
-  offset: number,
   opacity: number,
   color: string,
 ) {
-  if (!element) {
-    return;
-  }
-
-  element.setAttribute("offset", `${(clamp01(offset) * 100).toFixed(2)}%`);
-  element.setAttribute("stop-opacity", clamp01(opacity).toFixed(3));
-  element.setAttribute("stop-color", color);
+  setSvgAttr(element, "stop-opacity", clamp01(opacity));
+  setSvgAttr(element, "stop-color", color);
 }
 
 // One reusable active wave per cluster. The route can be long, but only one
@@ -3473,9 +3525,10 @@ type TubeFlowTiming = {
   updatedAt: number;
 };
 
-// Fixed offsets used for the gradient stops. A denser set lets the compact
-// wave move smoothly instead of popping from one coarse stop to the next.
-const STOP_OFFSETS = Array.from({ length: 21 }, (_, index) => index / 20);
+// Fixed offsets used for the gradient stops. Long relation lines need a denser
+// grid so the compact wave never falls between samples and appears to flicker.
+// Attribute caching below keeps the extra stops from rewriting unchanged values.
+const STOP_OFFSETS = Array.from({ length: 41 }, (_, index) => index / 40);
 
 function GraphTubeFlow({
   flow,
@@ -3539,6 +3592,7 @@ function GraphTubeFlow({
     let frame = 0;
     let mounted = true;
     let lastArrivalKey = "";
+    let initialSlotOffset: number | null = null;
     timingRef.current = null;
 
     const draw = (time: number) => {
@@ -3602,14 +3656,21 @@ function GraphTubeFlow({
         routeDurations,
         traversalDuration,
       } = timing;
+      if (initialSlotOffset === null) {
+        const startIndex = Math.floor(Math.random() * segments.length);
+        initialSlotOffset = slotDurations
+          .slice(0, startIndex)
+          .reduce((sum, duration) => sum + duration, 0);
+      }
       // ─── Route progression ───────────────────────────────────────────────
       // The wave travels one relation, dwells on the reached badge for the
       // ping duration, then moves to the next explicit route segment. The route
       // builder already inserts real backtrack segments only at dead ends, so
       // the renderer should not globally reverse the whole path.
       const cycleDuration = traversalDuration;
-      const cycleNumber = Math.floor(elapsedSeconds / cycleDuration);
-      const cyclePos = elapsedSeconds - cycleNumber * cycleDuration;
+      const offsetElapsed = elapsedSeconds + initialSlotOffset;
+      const cycleNumber = Math.floor(offsetElapsed / cycleDuration);
+      const cyclePos = offsetElapsed - cycleNumber * cycleDuration;
       const traversalPos = cyclePos;
       let routeIndex = 0;
       let routePos = traversalPos;
@@ -3764,7 +3825,7 @@ function GraphTubeFlow({
         for (let s = 0; s < STOP_OFFSETS.length; s++) {
           const offset = STOP_OFFSETS[s];
           const profile = waveProfile(offset, center, visibleLineLength);
-          setStop(refs.stops[s], offset, peak * profile, color);
+          setStop(refs.stops[s], peak * profile, color);
         }
       }
 
@@ -3832,7 +3893,7 @@ function GraphTubeFlow({
         strokeWidth={3.2}
         strokeLinecap="round"
         opacity={0}
-        filter="url(#project-signal-glow)"
+        filter={graphQuality.useFilteredWaveGlow ? "url(#project-signal-glow)" : undefined}
       />
       <line
         ref={(el) => {
@@ -3842,7 +3903,7 @@ function GraphTubeFlow({
         strokeWidth={WAVE_STROKE_BASE}
         strokeLinecap="round"
         opacity={0}
-        filter="url(#project-signal-glow)"
+        filter={graphQuality.useFilteredWaveGlow ? "url(#project-signal-glow)" : undefined}
       />
     </g>
   );
@@ -4019,7 +4080,7 @@ function PreviewCard({
             )}
           </ul>
 
-          <div className="mt-5 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <div className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
             <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
               Engineering Signals
             </p>

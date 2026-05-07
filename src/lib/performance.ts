@@ -20,6 +20,7 @@ export type AdaptivePerformanceProfile = {
     glowStrokeScale: number;
     waveIntensityScale: number;
     useFilteredEdgeGlow: boolean;
+    useFilteredWaveGlow: boolean;
     useBlendMode: boolean;
   };
   skills: {
@@ -126,6 +127,7 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
       glowStrokeScale: 1,
       waveIntensityScale: 1,
       useFilteredEdgeGlow: true,
+      useFilteredWaveGlow: true,
       useBlendMode: true,
     },
     balanced: {
@@ -138,6 +140,7 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
       glowStrokeScale: 0.82,
       waveIntensityScale: 0.9,
       useFilteredEdgeGlow: true,
+      useFilteredWaveGlow: false,
       useBlendMode: true,
     },
     lite: {
@@ -150,6 +153,7 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
       glowStrokeScale: 0.64,
       waveIntensityScale: 0.78,
       useFilteredEdgeGlow: false,
+      useFilteredWaveGlow: false,
       useBlendMode: false,
     },
   };
@@ -219,6 +223,37 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
   };
 }
 
+function profileSectionEqual<T extends Record<string, number | boolean>>(
+  left: T,
+  right: T,
+) {
+  const leftKeys = Object.keys(left) as Array<keyof T>;
+  const rightKeys = Object.keys(right) as Array<keyof T>;
+
+  return (
+    leftKeys.length === rightKeys.length &&
+    leftKeys.every((key) => left[key] === right[key])
+  );
+}
+
+function performanceProfilesEqual(
+  left: AdaptivePerformanceProfile,
+  right: AdaptivePerformanceProfile,
+) {
+  return (
+    left.quality === right.quality &&
+    left.qualitySource === right.qualitySource &&
+    left.dpr === right.dpr &&
+    left.viewportWidth === right.viewportWidth &&
+    left.viewportHeight === right.viewportHeight &&
+    left.cssArea === right.cssArea &&
+    left.pixelArea === right.pixelArea &&
+    profileSectionEqual(left.graph, right.graph) &&
+    profileSectionEqual(left.skills, right.skills) &&
+    profileSectionEqual(left.background, right.background)
+  );
+}
+
 export function useAdaptivePerformanceProfile() {
   const [profile, setProfile] = useState(getAdaptivePerformanceProfile);
 
@@ -231,7 +266,10 @@ export function useAdaptivePerformanceProfile() {
     const update = () => {
       window.cancelAnimationFrame(frame);
       frame = window.requestAnimationFrame(() => {
-        setProfile(getAdaptivePerformanceProfile());
+        setProfile((current) => {
+          const next = getAdaptivePerformanceProfile();
+          return performanceProfilesEqual(current, next) ? current : next;
+        });
       });
     };
 

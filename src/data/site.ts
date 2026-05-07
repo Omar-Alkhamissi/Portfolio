@@ -3,8 +3,6 @@
 
 export const site = {
   name: "Omar Alkhamissi",
-  shortName: "Omar",
-  initials: "OA",
   title: "Software Developer",
   subtitle:
     "Full-stack, backend, and data-focused developer building clean, practical software.",
