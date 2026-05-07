@@ -1,7 +1,9 @@
-import { useEffect, useRef } from "react";
-
-const MAX_CANVAS_DPR = 1.5;
-const BACKGROUND_FRAME_MS = 1000 / 30;
+import { useEffect, useRef, useState } from "react";
+import {
+  GRAPH_DRAG_PERFORMANCE_EVENT,
+  useAdaptivePerformanceProfile,
+  usePerformanceDiagnosticFlags,
+} from "../lib/performance";
 
 /**
  * Animated background — a drifting starfield with a soft nebula wash.
@@ -15,12 +17,28 @@ const BACKGROUND_FRAME_MS = 1000 / 30;
  */
 export function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const performanceProfile = useAdaptivePerformanceProfile();
+  const diagnostics = usePerformanceDiagnosticFlags();
+  const [graphDragActive, setGraphDragActive] = useState(false);
+
+  useEffect(() => {
+    const onGraphDrag = (event: Event) => {
+      const detail = (event as CustomEvent<{ active?: boolean }>).detail;
+      setGraphDragActive(Boolean(detail?.active));
+    };
+
+    window.addEventListener(GRAPH_DRAG_PERFORMANCE_EVENT, onGraphDrag);
+    return () => {
+      window.removeEventListener(GRAPH_DRAG_PERFORMANCE_EVENT, onGraphDrag);
+    };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) return;
+    const backgroundQuality = performanceProfile.background;
 
     const reduceMotionQuery = window.matchMedia(
       "(prefers-reduced-motion: reduce)"
@@ -28,15 +46,15 @@ export function AnimatedBackground() {
     let reduceMotion = reduceMotionQuery.matches;
     const motionScale = () => (reduceMotion ? 0.5 : 1);
 
-    let dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
+    let dpr = Math.min(window.devicePixelRatio || 1, backgroundQuality.maxDpr);
     let width = window.innerWidth;
     let height = window.innerHeight;
 
     // Star field — three depth layers for parallax.
     // Each star: [x, y, baseRadius, twinklePhase, layer, angle, speed, driftPhase, driftRate, twinkleRate]
     const STAR_COUNT = Math.min(
-      Math.floor((width * height) / 9000),
-      260 // hard cap for low-end devices
+      Math.floor((width * height) / backgroundQuality.starAreaDivisor),
+      backgroundQuality.starCap,
     );
     const STAR_SIZE = 10;
     const stars = new Float32Array(STAR_COUNT * STAR_SIZE);
@@ -78,9 +96,13 @@ export function AnimatedBackground() {
       { x: width * 0.8, y: height * 0.6, vx: -0.03, vy: -0.02, r: 460, hue: 210, alpha: 0.14 },
       { x: width * 0.5, y: height * 0.85, vx: 0.02, vy: -0.03, r: 340, hue: 192, alpha: 0.12 },
     ];
+    for (const blob of blobs) {
+      blob.r *= backgroundQuality.blobRadiusScale;
+      blob.alpha *= backgroundQuality.blobAlphaScale;
+    }
 
     const resize = () => {
-      dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
+      dpr = Math.min(window.devicePixelRatio || 1, backgroundQuality.maxDpr);
       width = window.innerWidth;
       height = window.innerHeight;
       canvas.width = Math.floor(width * dpr);
@@ -96,7 +118,7 @@ export function AnimatedBackground() {
     let lastDraw = 0;
 
     const draw = (now: number) => {
-      if (now - lastDraw < BACKGROUND_FRAME_MS) {
+      if (now - lastDraw < backgroundQuality.frameMs) {
         frameId = requestAnimationFrame(draw);
         return;
       }
@@ -199,7 +221,11 @@ export function AnimatedBackground() {
       document.removeEventListener("visibilitychange", onVisibility);
       reduceMotionQuery.removeEventListener("change", onReduceMotionChange);
     };
-  }, []);
+  }, [performanceProfile.background]);
+
+  if (diagnostics.disableBackground || graphDragActive) {
+    return null;
+  }
 
   return (
     <>

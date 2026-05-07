@@ -7,6 +7,13 @@ import {
   Pin,
 } from "lucide-react";
 import { projects, type Project } from "../data/projects";
+import {
+  announceGraphDragPerformance,
+  useAdaptivePerformanceProfile,
+  usePerformanceDiagnosticFlags,
+  usePerformanceDebugState,
+  type AdaptivePerformanceProfile,
+} from "../lib/performance";
 
 type ClusterKey = "web" | "enterprise" | "patterns" | "systems" | "data" | "java";
 type LabelPlacement = "left" | "right" | "top" | "bottom";
@@ -82,6 +89,44 @@ type EdgeLineRefs = {
   core: SVGLineElement | null;
 };
 
+type GraphPerfMetric = {
+  frameMs: number;
+  relationCalcMs: number;
+};
+
+type GraphPerfMetrics = {
+  waveFrameMs: number;
+  relationCalcMs: number;
+  waveSamples: number;
+  pointer:
+    | {
+        nodeId: string;
+        clientX: number;
+        clientY: number;
+        svgX: number;
+        svgY: number;
+      }
+    | null;
+};
+
+type GraphDebugSnapshot = {
+  fps: number;
+  frameMs: number;
+  p95FrameMs: number;
+  maxFrameMs: number;
+  jankPercent: number;
+  waveFrameMs: number;
+  relationCalcMs: number;
+  visualViewportScale: number;
+  graphRect:
+    | {
+        width: number;
+        height: number;
+      }
+    | null;
+  pointer: GraphPerfMetrics["pointer"];
+};
+
 const VIEWBOX_W = 1320;
 const VIEWBOX_H = 860;
 const CENTER_X = VIEWBOX_W / 2;
@@ -90,6 +135,8 @@ const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const NODE_RADIUS = 27;
 const LINE_GAP = NODE_RADIUS + 3;
 const LABEL_GAP = 12;
+const EDGE_NODE_CLEARANCE = NODE_RADIUS + 24;
+const EDGE_FOOTPRINT_CLEARANCE = 8;
 
 // ─── Animation tuning ────────────────────────────────────────────────────────
 // Wave (pressure / "water in a vein") — fallback duration of one segment
@@ -133,12 +180,10 @@ const WAVE_CHANNEL_OPACITY = 0.018;
 // Badge ping — a short internal confirmation when the pressure wave reaches
 // the project badge. Clipped to the badge face, so it reads as a ping without
 // an outer ripple ring.
-const BADGE_PING_DURATION = 0.92;
+const BADGE_PING_DURATION = 1.08;
 const BADGE_PING_DURATION_REDUCED = 0.01;
-const BADGE_PING_FACE_OPACITY = 0.58;
-const BADGE_PING_CORE_OPACITY = 0.24;
-const BADGE_PING_STROKE_OPACITY = 0.92;
-const BADGE_PING_TIMES = [0, 0.12, 0.26, 0.42, 0.52, 0.6, 0.68, 1];
+const BADGE_PING_FACE_OPACITY = 0.54;
+const BADGE_PING_TIMES = [0, 0.08, 0.18, 0.32, 0.46, 0.58, 0.72, 0.86, 1];
 // Used for small hover/focus glow and the internal badge ping.
 const BLOOM_EASE_EXPO_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const BLOOM_EASE_SLOW_IN_OUT: [number, number, number, number] = [0.45, 0, 0.2, 1];
@@ -202,13 +247,39 @@ const TECH_WEIGHT: Record<string, number> = {
   raii: 0.35,
   shared_ptr: 0.35,
   oop: 0.18,
-  "design patterns": 0.18,
   observer: 0.15,
   mvc: 0.15,
   "recursive parsing": 0.4,
   "stored procedures": 0.85,
   "t-sql": 0.85,
   csvhelper: 0.65,
+  "full-stack": 1.35,
+  "frontend spa": 1.05,
+  "backend apis": 1.25,
+  "external apis": 1.2,
+  database: 1.0,
+  "sql / relational db": 1.12,
+  "mongodb / nosql": 1.2,
+  authentication: 1.15,
+  payments: 1.25,
+  testing: 1.1,
+  "real-time": 1.28,
+  mobile: 1.3,
+  "cloud / deployment": 1.0,
+  "local storage": 0.92,
+  "data processing": 1.08,
+  algorithms: 1.12,
+  "custom data structures": 1.18,
+  "design patterns": 1.15,
+  "desktop gui": 1.0,
+  "grpc / microservices": 1.32,
+  "file uploads": 0.95,
+  "reporting / pdf": 1.02,
+  "admin dashboard": 1.0,
+  "sql procedures": 1.15,
+  "parsing / compilers": 1.25,
+  "document generation": 1.05,
+  "game development": 0.92,
 };
 
 type EdgeColorFamily = {
@@ -281,45 +352,75 @@ const EDGE_TAG_COLORS: Record<string, string> = {
   "systems programming": "#f34b7d",
   "compiler pipeline": "#f43f5e",
   "real-time systems": "#a3e635",
+  "full-stack": "#61dafb",
+  "frontend spa": "#38bdf8",
+  "backend apis": "#60a5fa",
+  "external apis": "#a3e635",
+  database: "#ef4444",
+  "sql / relational db": "#ef4444",
+  "mongodb / nosql": "#13aa52",
+  authentication: "#fb7185",
+  payments: "#635bff",
+  testing: "#22c55e",
+  "real-time": "#a3e635",
+  mobile: "#facc15",
+  "cloud / deployment": "#38bdf8",
+  "local storage": "#f59e0b",
+  "data processing": "#14b8a6",
+  algorithms: "#f34b7d",
+  "custom data structures": "#fb923c",
+  "desktop gui": "#d97706",
+  "grpc / microservices": "#38bdf8",
+  "file uploads": "#f472b6",
+  "reporting / pdf": "#fbbf24",
+  "admin dashboard": "#c084fc",
+  "sql procedures": "#f97316",
+  "parsing / compilers": "#f43f5e",
+  "document generation": "#a78bfa",
+  "game development": "#e5e7eb",
 };
 
 const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
   {
-    label: "Web",
+    label: "Full-Stack",
     color: "#61dafb",
+    tags: ["full-stack", "frontend spa", "react", "vue 3", "quasar", "mui"],
+  },
+  {
+    label: "Backend APIs",
+    color: "#60a5fa",
     tags: [
-      "react",
+      "backend apis",
+      "grpc / microservices",
+      "grpc",
+      "protobuf",
+      "socketio",
+      "swagger",
       "node",
       "express",
-      "mongodb",
-      "mui",
-      "vue 3",
-      "quasar",
-      "frontend app",
-      "javascript ecosystem",
+      "asp.net core",
     ],
   },
   {
-    label: "Mobile",
-    color: "#facc15",
-    tags: ["react native", "expo", "firebase", "firestore", "mobile app"],
-  },
-  {
-    label: "APIs",
+    label: "External APIs",
     color: "#a3e635",
-    tags: ["socketio", "grpc", "protobuf", "real-time systems", "swagger", "jwt"],
+    tags: ["external apis", "real-time", "real-time systems"],
   },
   {
-    label: "SQL",
+    label: "Database",
     color: "#ef4444",
     tags: [
+      "database",
       "sql",
       "sql server",
       "t-sql",
       "stored procedures",
+      "sql procedures",
       "postgresql",
       "plpgsql",
       "sqlite",
+      "mongodb / nosql",
+      "mongodb",
       "relational data",
       "database systems",
       "data modeling",
@@ -327,9 +428,32 @@ const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
     ],
   },
   {
-    label: "C++",
+    label: "Security / Pay",
+    color: "#fb7185",
+    tags: ["authentication", "payments", "jwt", "stripe"],
+  },
+  {
+    label: "Mobile",
+    color: "#facc15",
+    tags: [
+      "mobile",
+      "react native",
+      "expo",
+      "firebase",
+      "firestore",
+      "cloud / deployment",
+      "local storage",
+      "mobile app",
+    ],
+  },
+  {
+    label: "Algorithms",
     color: "#f34b7d",
     tags: [
+      "algorithms",
+      "custom data structures",
+      "parsing / compilers",
+      "data processing",
       "c++",
       "stl",
       "templates",
@@ -342,28 +466,26 @@ const EDGE_COLOR_FAMILIES: EdgeColorFamily[] = [
     ],
   },
   {
-    label: "Patterns",
+    label: "Architecture",
     color: "#c084fc",
-    tags: ["oop", "oop architecture", "design patterns", "observer", "mvc"],
-  },
-  {
-    label: "Java",
-    color: "#b07219",
-    tags: ["java", "swing", "java ecosystem"],
-  },
-  {
-    label: "C# / .NET",
-    color: "#7c3aed",
     tags: [
-      "c#",
-      ".net",
-      ".net 8",
-      ".net 9",
-      "asp.net core",
-      "ef core",
-      "xunit",
-      "csharp ecosystem",
+      "design patterns",
+      "desktop gui",
+      "document generation",
+      "reporting / pdf",
+      "admin dashboard",
+      "file uploads",
+      "game development",
+      "oop",
+      "oop architecture",
+      "observer",
+      "mvc",
     ],
+  },
+  {
+    label: "Testing",
+    color: "#22c55e",
+    tags: ["testing", "jest", "xunit", "github actions"],
   },
 ];
 
@@ -414,13 +536,14 @@ const DEFAULT_EDGE_COLORS = [
 
 const EDGE_LEGEND = [
   EDGE_COLOR_FAMILIES[0],
-  EDGE_COLOR_FAMILIES[7],
-  EDGE_COLOR_FAMILIES[3],
-  EDGE_COLOR_FAMILIES[1],
   EDGE_COLOR_FAMILIES[2],
+  EDGE_COLOR_FAMILIES[1],
+  EDGE_COLOR_FAMILIES[3],
+  EDGE_COLOR_FAMILIES[4],
   EDGE_COLOR_FAMILIES[5],
   EDGE_COLOR_FAMILIES[6],
-  EDGE_COLOR_FAMILIES[4],
+  EDGE_COLOR_FAMILIES[7],
+  EDGE_COLOR_FAMILIES[8],
 ];
 
 const CLUSTER_CENTERS: Record<ClusterKey, { x: number; y: number }> = {
@@ -451,36 +574,37 @@ const CLUSTER_ANGLE_OFFSETS: Record<ClusterKey, number> = {
 };
 
 const PROJECT_POSITION_OVERRIDES: Record<string, LivePosition> = {
-  "Real-Time Chat App": { x: 147, y: 183 },
-  "Groceries Mobile App": { x: 236, y: 63 },
-  "Travel Advisory Aggregator": { x: 348, y: 127 },
-  "Fragrance E-Commerce": { x: 436, y: 212 },
-  "Fast Food Ordering": { x: 735, y: 234 },
-  "Bookshelf Mobile App": { x: 167, y: 385 },
-  "Debug My Heart": { x: 303, y: 352 },
-  "Multiplayer Wordle": { x: 586, y: 333 },
-  "Stoichiometry Library": { x: 445, y: 498 },
-  "Employee Helpdesk Portal": { x: 1025, y: 368 },
-  "Order Management System": { x: 869, y: 482 },
-  "Data Warehouse ETL Pipeline": { x: 919, y: 665 },
-  "Drone Management System": { x: 1164, y: 444 },
-  "Employee Management System": { x: 1245, y: 559 },
-  "Family Genealogy Database": { x: 1089, y: 739 },
-  "Enigma Machine Simulator": { x: 884, y: 135 },
-  "Customer Data Storage": { x: 1159, y: 105 },
-  "Student Loan App": { x: 1157, y: 333 },
-  "Khronos Calendar Library": { x: 305, y: 539 },
-  "Expression Evaluator": { x: 233, y: 723 },
-  "Triage Priority Queue": { x: 155, y: 625 },
-  "Patient Diagnosis Classifier": { x: 382, y: 748 },
-  "Canadian Cities Analyzer": { x: 632, y: 482 },
-  "2D Parallax Arcade Game": { x: 780, y: 469 },
-  "Collaborative Drawing App": { x: 580, y: 595 },
-  "Document Factory": { x: 801, y: 594 },
-  "Course Grade Tracker": { x: 525, y: 694 },
-  "Stack Evaluator": { x: 597, y: 795 },
-  "Coffee Shop POS": { x: 749, y: 785 },
-  "Global Economics Reporter": { x: 854, y: 744 },
+  "Groceries Mobile App": { x: 210, y: 97 },
+  "Real-Time Room Chat App": { x: 99, y: 213 },
+  "Bookshelf Mobile App": { x: 159, y: 399 },
+  "Travel Advisory Tracker": { x: 334, y: 202 },
+  "Debug My Heart": { x: 320, y: 349 },
+  "Fragrance E-Commerce": { x: 419, y: 255 },
+  "Wordle gRPC Microservices": { x: 512, y: 417 },
+  "Fast Food Ordering": { x: 743, y: 171 },
+  "Employee Helpdesk Portal": { x: 989, y: 347 },
+  "Enigma Machine Simulator": { x: 888, y: 134 },
+  "Customer Incentive Management System": { x: 1125, y: 148 },
+  "Student Loan Repayment Calculator": { x: 1150, y: 365 },
+  "2D Parallax Arcade Game": { x: 1242, y: 461 },
+  "Drone Management System": { x: 1131, y: 463 },
+  "Employee Management System": { x: 1209, y: 579 },
+  "Family Genealogy Database": { x: 1070, y: 745 },
+  "Data Warehouse ETL Pipeline": { x: 897, y: 655 },
+  "Order Management System": { x: 888, y: 468 },
+  "Document Factory": { x: 849, y: 565 },
+  "Global Economics Reporter": { x: 849, y: 752 },
+  "Coffee Shop POS": { x: 710, y: 795 },
+  "Collaborative Drawing App": { x: 588, y: 680 },
+  "Stack Evaluator": { x: 582, y: 797 },
+  "Canadian Cities Analyzer": { x: 625, y: 526 },
+  "Course Grade Tracker": { x: 488, y: 691 },
+  "Patient Diagnosis Classifier": { x: 345, y: 689 },
+  "Expression Evaluator": { x: 197, y: 730 },
+  "Triage Priority Queue": { x: 132, y: 627 },
+  "Khronos Calendar Library": { x: 220, y: 498 },
+  "Newcomb-Benford Data Analyzer": { x: 408, y: 580 },
+  "Stoichiometry Library": { x: 409, y: 435 },
 };
 
 const weightOf = (tech: string) => TECH_WEIGHT[tech] ?? 0.4;
@@ -645,6 +769,57 @@ function estimateLabelHeight(title: string, width: number) {
   return approxLines === 1 ? 22 : 32;
 }
 
+const CONNECTABLE_TECH_TAGS = new Set([
+  "react",
+  "react native",
+  "node",
+  "express",
+  "mongodb",
+  "mui",
+  "vue 3",
+  "quasar",
+  "firebase",
+  "firestore",
+  "expo",
+  "asp.net core",
+  "ef core",
+  "sql server",
+  "grpc",
+  "protobuf",
+  "swagger",
+  "socketio",
+  "jwt",
+  "stripe",
+  "jest",
+  "xunit",
+  "sqlite",
+  "postgresql",
+  "plpgsql",
+  "swing",
+  "unity",
+  "xpath",
+  "xml",
+  "json schema",
+  "stored procedures",
+  "t-sql",
+  "csvhelper",
+  "recursive parsing",
+  "design patterns",
+  "observer",
+  "mvc",
+  "templates",
+  "raii",
+  "shared_ptr",
+]);
+
+function relationTag(value: string) {
+  return value.toLowerCase().trim();
+}
+
+function isConnectableTechTag(tag: string) {
+  return CONNECTABLE_TECH_TAGS.has(tag);
+}
+
 function expandTechTags(tech: string): string[] {
   const lower = tech.toLowerCase().trim();
 
@@ -712,56 +887,7 @@ function expandTechTags(tech: string): string[] {
 }
 
 function inferRelationshipTags(project: Project): string[] {
-  const text = `${project.title} ${project.blurb} ${project.description} ${project.tech.join(
-    " ",
-  )}`.toLowerCase();
-  const tags: string[] = [];
-
-  if (/(react|vue|vite|quasar|mui|tailwind|frontend|storefront|spa)/.test(text)) {
-    tags.push("frontend app");
-  }
-
-  if (/(node|express|asp\.net|api|jwt|grpc|protobuf|backend|server)/.test(text)) {
-    tags.push("backend api");
-  }
-
-  if (/(react|vue|node|express|javascript|typescript|socket|vite|mui)/.test(text)) {
-    tags.push("javascript ecosystem");
-  }
-
-  if (/(c#|\.net|asp\.net|ef core|xunit|unity)/.test(text)) {
-    tags.push("csharp ecosystem");
-  }
-
-  if (/(java|swing)/.test(text)) {
-    tags.push("java ecosystem");
-  }
-
-  if (/(sql|database|postgres|plpgsql|t-sql|stored procedure|warehouse|etl|payroll|genealogy|order management|drone management)/.test(text)) {
-    tags.push("relational data", "database systems", "data modeling");
-  }
-
-  if (/(react native|expo|mobile|apk|sqlite|firebase|firestore)/.test(text)) {
-    tags.push("mobile app");
-  }
-
-  if (/(oop|design pattern|mediator|observer|memento|strategy|factory|builder|decorator|state|bridge|inheritance)/.test(text)) {
-    tags.push("oop architecture");
-  }
-
-  if (/(c\+\+|tokenizer|parser|rpn|compiler|decision tree|calendar|data structures)/.test(text)) {
-    tags.push("systems programming");
-  }
-
-  if (/(socket|real-time|streaming|websocket|grpc)/.test(text)) {
-    tags.push("real-time systems");
-  }
-
-  if (/(expression evaluator|tokenizer|parser|rpn)/.test(text)) {
-    tags.push("compiler pipeline");
-  }
-
-  return tags;
+  return project.relations.map(relationTag);
 }
 
 function scoreSharedTech(shared: string[], frequency: Map<string, number>) {
@@ -770,6 +896,115 @@ function scoreSharedTech(shared: string[], frequency: Map<string, number>) {
     const rarity = 1 / Math.sqrt(freq);
     return sum + weightOf(tech) * rarity;
   }, 0);
+}
+
+const MAX_SELECTED_EDGES_PER_NODE = 5;
+const DEFAULT_EDGE_LIMIT_PER_TAG = 5;
+const EDGE_LIMIT_BY_TAG: Record<string, number> = {
+  "full-stack": 6,
+  "frontend spa": 4,
+  "backend apis": 7,
+  "external apis": 3,
+  database: 6,
+  "sql / relational db": 7,
+  "mongodb / nosql": 4,
+  authentication: 4,
+  payments: 2,
+  testing: 5,
+  "real-time": 4,
+  mobile: 4,
+  "data processing": 7,
+  algorithms: 8,
+  "custom data structures": 5,
+  "design patterns": 6,
+  "desktop gui": 4,
+  "grpc / microservices": 2,
+  "reporting / pdf": 3,
+  "admin dashboard": 3,
+  "sql procedures": 5,
+  "parsing / compilers": 4,
+  "document generation": 2,
+  "game development": 2,
+};
+
+function primarySharedTag(shared: string[], frequency: Map<string, number>) {
+  return [...shared]
+    .sort((a, b) => {
+      const aRarity = 1 / Math.sqrt(frequency.get(a) ?? 1);
+      const bRarity = 1 / Math.sqrt(frequency.get(b) ?? 1);
+      return (
+        weightOf(b) * 1.4 + bRarity -
+        (weightOf(a) * 1.4 + aRarity)
+      );
+    })[0];
+}
+
+function edgeLimitForTag(tag: string, frequency: Map<string, number>) {
+  const memberCount = frequency.get(tag) ?? 2;
+  const configured = EDGE_LIMIT_BY_TAG[tag] ?? DEFAULT_EDGE_LIMIT_PER_TAG;
+  return clamp(configured, 1, Math.max(1, memberCount - 1));
+}
+
+function selectReadableEdges(
+  candidates: Edge[],
+  items: Project[],
+  frequency: Map<string, number>,
+) {
+  const selected: Edge[] = [];
+  const selectedKeys = new Set<string>();
+  const edgesByNode = new Map<string, number>();
+  const edgesByTag = new Map<string, number>();
+  const sorted = [...candidates].sort(
+    (a, b) =>
+      b.weight - a.weight ||
+      a.source.localeCompare(b.source) ||
+      a.target.localeCompare(b.target),
+  );
+
+  const addEdge = (edge: Edge) => {
+    const key = edgePairKey(edge.source, edge.target);
+    if (selectedKeys.has(key)) return false;
+
+    selected.push(edge);
+    selectedKeys.add(key);
+    edgesByNode.set(edge.source, (edgesByNode.get(edge.source) ?? 0) + 1);
+    edgesByNode.set(edge.target, (edgesByNode.get(edge.target) ?? 0) + 1);
+
+    const tag = primarySharedTag(edge.shared, frequency);
+    edgesByTag.set(tag, (edgesByTag.get(tag) ?? 0) + 1);
+    return true;
+  };
+
+  for (const edge of sorted) {
+    const sourceCount = edgesByNode.get(edge.source) ?? 0;
+    const targetCount = edgesByNode.get(edge.target) ?? 0;
+    const tag = primarySharedTag(edge.shared, frequency);
+    const tagCount = edgesByTag.get(tag) ?? 0;
+
+    if (
+      sourceCount >= MAX_SELECTED_EDGES_PER_NODE ||
+      targetCount >= MAX_SELECTED_EDGES_PER_NODE ||
+      tagCount >= edgeLimitForTag(tag, frequency)
+    ) {
+      continue;
+    }
+
+    addEdge(edge);
+  }
+
+  for (const project of items) {
+    if ((edgesByNode.get(project.title) ?? 0) > 0) continue;
+
+    const fallback = sorted.find(
+      (edge) => edge.source === project.title || edge.target === project.title,
+    );
+
+    if (fallback) {
+      addEdge(fallback);
+    }
+  }
+
+  return selected;
 }
 
 function classifyProject(project: Project): ClusterKey {
@@ -864,6 +1099,83 @@ function getFootprintBox(node: Node) {
   };
 }
 
+function expandBox(box: ReturnType<typeof getFootprintBox>, padding: number) {
+  return {
+    left: box.left - padding,
+    top: box.top - padding,
+    right: box.right + padding,
+    bottom: box.bottom + padding,
+  };
+}
+
+function isPointInBox(point: LivePosition, box: ReturnType<typeof getFootprintBox>) {
+  return (
+    point.x >= box.left &&
+    point.x <= box.right &&
+    point.y >= box.top &&
+    point.y <= box.bottom
+  );
+}
+
+function segmentIntersectsBox(
+  start: LivePosition,
+  end: LivePosition,
+  box: ReturnType<typeof getFootprintBox>,
+) {
+  if (isPointInBox(start, box) || isPointInBox(end, box)) {
+    return true;
+  }
+
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  let tMin = 0;
+  let tMax = 1;
+
+  const clip = (p: number, q: number) => {
+    if (Math.abs(p) < 0.0001) {
+      return q >= 0;
+    }
+
+    const t = q / p;
+    if (p < 0) {
+      if (t > tMax) return false;
+      if (t > tMin) tMin = t;
+    } else {
+      if (t < tMin) return false;
+      if (t < tMax) tMax = t;
+    }
+
+    return true;
+  };
+
+  return (
+    clip(-dx, start.x - box.left) &&
+    clip(dx, box.right - start.x) &&
+    clip(-dy, start.y - box.top) &&
+    clip(dy, box.bottom - start.y)
+  );
+}
+
+function closestPointOnSegment(
+  point: LivePosition,
+  start: LivePosition,
+  end: LivePosition,
+) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lenSq = dx * dx + dy * dy || 1;
+  const t = clamp(
+    ((point.x - start.x) * dx + (point.y - start.y) * dy) / lenSq,
+    0,
+    1,
+  );
+
+  return {
+    x: start.x + dx * t,
+    y: start.y + dy * t,
+  };
+}
+
 function clampNodeToViewport(node: Node) {
   const placement = getLabelPlacement(node);
   const extraLeft =
@@ -902,7 +1214,14 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
   });
 
   const directTech = items.map((project) =>
-    Array.from(new Set(project.tech.flatMap((tech) => expandTechTags(tech)))),
+    Array.from(
+      new Set([
+        ...project.relations.map(relationTag),
+        ...project.tech
+          .flatMap((tech) => expandTechTags(tech))
+          .filter(isConnectableTechTag),
+      ]),
+    ),
   );
   const relationshipTech = items.map((project) => inferRelationshipTags(project));
   const directColorTech = directTech.map((tags) =>
@@ -990,8 +1309,8 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
       label: "Java OOP",
       color: "#b07219",
       members: [
-        "Customer Data Storage",
-        "Student Loan App",
+        "Customer Incentive Management System",
+        "Student Loan Repayment Calculator",
         "Enigma Machine Simulator",
       ],
     },
@@ -1000,6 +1319,7 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
       color: "#f34b7d",
       members: [
         "Expression Evaluator",
+        "Newcomb-Benford Data Analyzer",
         "Khronos Calendar Library",
         "Patient Diagnosis Classifier",
         "Triage Priority Queue",
@@ -1022,20 +1342,18 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
 
   for (const group of CURATED_GROUPS) {
     const present = group.members.filter((m) => titleSet.has(m));
-    for (let i = 0; i < present.length; i++) {
-      for (let j = i + 1; j < present.length; j++) {
-        const key = edgePairKey(present[i], present[j]);
-        if (candidateByPair.has(key)) continue;
-        const edge: Edge = {
-          source: present[i],
-          target: present[j],
-          weight: 1.0,
-          shared: [group.label],
-          color: group.color,
-        };
-        curatedEdges.push(edge);
-        candidateByPair.set(key, edge);
-      }
+    for (let i = 0; i < present.length - 1; i++) {
+      const key = edgePairKey(present[i], present[i + 1]);
+      if (candidateByPair.has(key)) continue;
+      const edge: Edge = {
+        source: present[i],
+        target: present[i + 1],
+        weight: 1.0,
+        shared: [group.label],
+        color: group.color,
+      };
+      curatedEdges.push(edge);
+      candidateByPair.set(key, edge);
     }
   }
 
@@ -1047,30 +1365,30 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
     weight: number;
   }[] = [
     {
-      label: "Web frontend",
+      label: "Frontend SPA",
       source: "Fragrance E-Commerce",
       target: "Fast Food Ordering",
       color: "#61dafb",
       weight: 1.18,
     },
     {
-      label: "Web frontend",
+      label: "Frontend SPA",
       source: "Fragrance E-Commerce",
-      target: "Travel Advisory Aggregator",
+      target: "Travel Advisory Tracker",
       color: "#61dafb",
       weight: 1.08,
     },
     {
-      label: "Web frontend",
+      label: "Frontend SPA",
       source: "Fragrance E-Commerce",
       target: "Debug My Heart",
       color: "#61dafb",
       weight: 1.05,
     },
     {
-      label: "Web frontend",
+      label: "Frontend SPA",
       source: "Fragrance E-Commerce",
-      target: "Real-Time Chat App",
+      target: "Real-Time Room Chat App",
       color: "#61dafb",
       weight: 1.02,
     },
@@ -1094,7 +1412,11 @@ function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
     candidateByPair.set(key, edge);
   }
 
-  let edges: Edge[] = [...candidateEdges, ...curatedEdges];
+  let edges: Edge[] = selectReadableEdges(
+    [...candidateEdges, ...curatedEdges],
+    items,
+    techFrequency,
+  );
 
   const edgesByNode = new Map<string, Edge[]>();
   for (const edge of edges) {
@@ -1250,6 +1572,83 @@ function resolveFootprintOverlaps(nodes: Node[], iterations = 150) {
       node.x += (node.homeX - node.x) * 0.08;
       node.y += (node.homeY - node.y) * 0.08;
       clampNodeToViewport(node);
+    }
+  }
+}
+
+function resolveEdgeNodeOverlaps(
+  nodes: Node[],
+  edges: Edge[],
+  iterations = 100,
+) {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+
+  for (let tick = 0; tick < iterations; tick++) {
+    let moved = false;
+
+    for (const edge of edges) {
+      const source = nodeById.get(edge.source);
+      const target = nodeById.get(edge.target);
+
+      if (!source || !target) {
+        continue;
+      }
+
+      const endpoints = getEdgeEndpoints(source, target);
+      const start = { x: endpoints.x1, y: endpoints.y1 };
+      const end = { x: endpoints.x2, y: endpoints.y2 };
+
+      for (const node of nodes) {
+        if (node.id === edge.source || node.id === edge.target) {
+          continue;
+        }
+
+        const footprint = expandBox(
+          getFootprintBox(node),
+          EDGE_FOOTPRINT_CLEARANCE,
+        );
+
+        if (!segmentIntersectsBox(start, end, footprint)) {
+          continue;
+        }
+
+        const closest = closestPointOnSegment(node, start, end);
+        let dx = node.x - closest.x;
+        let dy = node.y - closest.y;
+        let distance = Math.hypot(dx, dy);
+
+        if (distance < 0.01) {
+          const edgeDx = end.x - start.x;
+          const edgeDy = end.y - start.y;
+          dx = -edgeDy || 1;
+          dy = edgeDx || 0;
+          distance = Math.hypot(dx, dy) || 1;
+        }
+
+        const nx = dx / distance;
+        const ny = dy / distance;
+        const push =
+          distance < EDGE_NODE_CLEARANCE
+            ? (EDGE_NODE_CLEARANCE - distance) * 0.22 + 5
+            : 6;
+
+        node.x += nx * push;
+        node.y += ny * push;
+        node.homeX = node.x;
+        node.homeY = node.y;
+        node.vx = 0;
+        node.vy = 0;
+        clampNodeToViewport(node);
+        moved = true;
+      }
+    }
+
+    if (!moved) {
+      break;
+    }
+
+    if (tick % 8 === 7) {
+      resolveFootprintOverlaps(nodes, 12);
     }
   }
 }
@@ -1426,6 +1825,10 @@ function splitLabel(title: string) {
   return [lines[0], lines.slice(1).join(" ")];
 }
 
+function clearTextSelection() {
+  window.getSelection()?.removeAllRanges();
+}
+
 function projectFocus(project: Project): ProjectFocus {
   const text = `${project.title} ${project.blurb} ${project.tech.join(" ")}`.toLowerCase();
 
@@ -1475,14 +1878,57 @@ export function ProjectGraph() {
     () => new Map(),
   );
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dragPerfActive, setDragPerfActive] = useState(false);
   const arrivalPingTimers = useRef<Map<string, number>>(new Map());
   const shouldReduceMotion = useReducedMotion();
+  const performanceProfile = useAdaptivePerformanceProfile();
+  const diagnostics = usePerformanceDiagnosticFlags();
+  const graphMotionReduced = Boolean(
+    shouldReduceMotion || diagnostics.staticMode || dragPerfActive,
+  );
+  const debugState = usePerformanceDebugState();
+  const graphDebugEnabled = debugState.enabled;
+  const graphQuality = useMemo(
+    () =>
+      diagnostics.disableGraphFilters || dragPerfActive
+        ? {
+            ...performanceProfile.graph,
+            edgeGlowBlur: 0.1,
+            signalGlowBlur: 0.1,
+            nodeGlowBlur: 0.1,
+            glowOpacityScale: 0.26,
+            glowStrokeScale: 0.42,
+            waveIntensityScale: 0.7,
+            useFilteredEdgeGlow: false,
+            useBlendMode: false,
+          }
+        : performanceProfile.graph,
+    [diagnostics.disableGraphFilters, dragPerfActive, performanceProfile.graph],
+  );
   // Ref consumed by GraphTubeFlow rAF loop so the wave reads up-to-the-frame
   // node coordinates without forcing the flow component to re-render.
   const livePositionsRef = useRef<Map<string, LivePosition>>(new Map());
   const nodeVisualRefs = useRef<Map<string, SVGGElement>>(new Map());
   const edgeLineRefs = useRef<Map<string, EdgeLineRefs>>(new Map());
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const perfMetricsRef = useRef<GraphPerfMetrics>({
+    waveFrameMs: 0,
+    relationCalcMs: 0,
+    waveSamples: 0,
+    pointer: null,
+  });
+  const [debugSnapshot, setDebugSnapshot] = useState<GraphDebugSnapshot>({
+    fps: 0,
+    frameMs: 0,
+    p95FrameMs: 0,
+    maxFrameMs: 0,
+    jankPercent: 0,
+    waveFrameMs: 0,
+    relationCalcMs: 0,
+    visualViewportScale: 1,
+    graphRect: null,
+    pointer: null,
+  });
   // ─── Drag system ──────────────────────────────────────────────────────────
   // Pointer events drive one live coordinate source. During active drag we
   // write directly to the SVG node group and relation-line attributes, then
@@ -1504,6 +1950,9 @@ export function ProjectGraph() {
   const { nodes, edges } = useMemo(() => {
     const graph = buildGraph(projects);
     runLayout(graph.nodes, graph.edges);
+    resolveFootprintOverlaps(graph.nodes, 80);
+    resolveEdgeNodeOverlaps(graph.nodes, graph.edges);
+    resolveFootprintOverlaps(graph.nodes, 60);
     applyProjectPositionOverrides(graph.nodes);
     return graph;
   }, []);
@@ -1550,9 +1999,15 @@ export function ProjectGraph() {
       for (const timer of arrivalPingTimers.current.values()) {
         window.clearTimeout(timer);
       }
+      announceGraphDragPerformance(false);
     },
     [],
   );
+
+  const setGraphDragPerfMode = useCallback((active: boolean) => {
+    setDragPerfActive(active);
+    announceGraphDragPerformance(active);
+  }, []);
 
   const handleTubeArrival = useCallback((arrival: NodeArrival) => {
     const token = window.performance.now();
@@ -1589,6 +2044,80 @@ export function ProjectGraph() {
     arrivalPingTimers.current.set(arrival.nodeId, timer);
   }, []);
 
+  const recordGraphFrameMetric = useCallback(
+    ({ frameMs, relationCalcMs }: GraphPerfMetric) => {
+      if (!graphDebugEnabled) {
+        return;
+      }
+
+      const metrics = perfMetricsRef.current;
+      const weight = metrics.waveSamples === 0 ? 1 : 0.12;
+      metrics.waveFrameMs =
+        metrics.waveFrameMs * (1 - weight) + frameMs * weight;
+      metrics.relationCalcMs =
+        metrics.relationCalcMs * (1 - weight) + relationCalcMs * weight;
+      metrics.waveSamples += 1;
+    },
+    [graphDebugEnabled],
+  );
+
+  useEffect(() => {
+    if (!graphDebugEnabled) {
+      return;
+    }
+
+    let frame = 0;
+    let last = performance.now();
+    let lastReport = last;
+    let frames = 0;
+    let frameSamples: number[] = [];
+
+    const tick = (now: number) => {
+      frames += 1;
+      const frameMs = now - last;
+      last = now;
+      frameSamples.push(frameMs);
+
+      if (now - lastReport >= 250) {
+        const elapsed = now - lastReport;
+        const metrics = perfMetricsRef.current;
+        const sortedSamples = [...frameSamples].sort((a, b) => a - b);
+        const p95Index = Math.max(0, Math.ceil(sortedSamples.length * 0.95) - 1);
+        const p95FrameMs = sortedSamples[p95Index] ?? frameMs;
+        const maxFrameMs = sortedSamples[sortedSamples.length - 1] ?? frameMs;
+        const jankyFrames = frameSamples.filter((sample) => sample > 24).length;
+        const graphRect = svgRef.current?.getBoundingClientRect() ?? null;
+        setDebugSnapshot({
+          fps: (frames * 1000) / elapsed,
+          frameMs,
+          p95FrameMs,
+          maxFrameMs,
+          jankPercent: frameSamples.length
+            ? (jankyFrames / frameSamples.length) * 100
+            : 0,
+          waveFrameMs: metrics.waveFrameMs,
+          relationCalcMs: metrics.relationCalcMs,
+          visualViewportScale: window.visualViewport?.scale ?? 1,
+          graphRect: graphRect
+            ? {
+                width: graphRect.width,
+                height: graphRect.height,
+              }
+            : null,
+          pointer: metrics.pointer,
+        });
+        frames = 0;
+        lastReport = now;
+        frameSamples = [];
+      }
+
+      frame = window.requestAnimationFrame(tick);
+    };
+
+    frame = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(frame);
+  }, [graphDebugEnabled]);
+
   const activeId = hoveredId ?? pinnedId;
 
   const adjacency = useMemo(() => {
@@ -1601,6 +2130,21 @@ export function ProjectGraph() {
     for (const edge of edges) {
       map.get(edge.source)?.add(edge.target);
       map.get(edge.target)?.add(edge.source);
+    }
+
+    return map;
+  }, [nodes, edges]);
+
+  const edgesByNode = useMemo(() => {
+    const map = new Map<string, Edge[]>();
+
+    for (const node of nodes) {
+      map.set(node.id, []);
+    }
+
+    for (const edge of edges) {
+      map.get(edge.source)?.push(edge);
+      map.get(edge.target)?.push(edge);
     }
 
     return map;
@@ -1756,12 +2300,9 @@ export function ProjectGraph() {
   const syncIncidentEdges = useCallback(
     (nodeId: string) => {
       const positions = livePositionsRef.current;
+      const incidentEdges = edgesByNode.get(nodeId) ?? [];
 
-      for (const edge of edges) {
-        if (edge.source !== nodeId && edge.target !== nodeId) {
-          continue;
-        }
-
+      for (const edge of incidentEdges) {
         const source = positions.get(edge.source);
         const target = positions.get(edge.target);
 
@@ -1781,14 +2322,12 @@ export function ProjectGraph() {
         setLineEndpoints(refs.core, endpoints);
       }
     },
-    [edges],
+    [edgesByNode],
   );
 
   const applyLiveDragPosition = useCallback(
     (nodeId: string, x: number, y: number) => {
-      const nextPositions = new Map(livePositionsRef.current);
-      nextPositions.set(nodeId, { x, y });
-      livePositionsRef.current = nextPositions;
+      livePositionsRef.current.set(nodeId, { x, y });
 
       const nodeElement = nodeVisualRefs.current.get(nodeId);
       if (nodeElement) {
@@ -1812,6 +2351,8 @@ export function ProjectGraph() {
         return;
       }
 
+      event.preventDefault();
+      clearTextSelection();
       // Capture the pointer so we keep getting events even if the cursor
       // leaves the node.
       event.currentTarget.setPointerCapture(event.pointerId);
@@ -1830,8 +2371,15 @@ export function ProjectGraph() {
         pending: null,
         inverseCtm: ctm ? ctm.inverse() : null,
       };
+      perfMetricsRef.current.pointer = {
+        nodeId: node.id,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        svgX: start.x,
+        svgY: start.y,
+      };
     },
-    [screenToSvg],
+    [screenToSvg, setGraphDragPerfMode],
   );
 
   const handleNodePointerMove = useCallback(
@@ -1845,12 +2393,21 @@ export function ProjectGraph() {
       if (!current) {
         return;
       }
+      perfMetricsRef.current.pointer = {
+        nodeId: drag.nodeId,
+        clientX: event.clientX,
+        clientY: event.clientY,
+        svgX: current.x,
+        svgY: current.y,
+      };
 
       const dx = current.x - drag.startSvgX;
       const dy = current.y - drag.startSvgY;
 
       if (!drag.moved && Math.hypot(dx, dy) >= DRAG_THRESHOLD) {
         drag.moved = true;
+        setGraphDragPerfMode(true);
+        clearTextSelection();
         if (draggingId !== drag.nodeId) {
           setDraggingId(drag.nodeId);
         }
@@ -1870,7 +2427,7 @@ export function ProjectGraph() {
       applyLiveDragPosition(drag.nodeId, nextX, nextY);
       drag.pending = { x: nextX, y: nextY };
     },
-    [applyLiveDragPosition, draggingId, screenToSvg],
+    [applyLiveDragPosition, draggingId, screenToSvg, setGraphDragPerfMode],
   );
 
   const finishDrag = useCallback(
@@ -1898,54 +2455,115 @@ export function ProjectGraph() {
         // pointer capture may already be released — safe to ignore.
       }
       dragStateRef.current = null;
+      setGraphDragPerfMode(false);
+      perfMetricsRef.current.pointer = null;
       if (draggingId) {
         setDraggingId(null);
       }
       return { wasDrag };
     },
-    [applyLiveDragPosition, commitDragPosition, draggingId],
+    [applyLiveDragPosition, commitDragPosition, draggingId, setGraphDragPerfMode],
   );
 
   const clusterFlows = useMemo(() => {
-    const claimedAnimatedEdges = new Set<string>();
+    const allGraphCandidates = edges
+      .map((edge) => {
+        const source = nodeById.get(edge.source);
+        const target = nodeById.get(edge.target);
+
+        if (!source || !target) {
+          return null;
+        }
+
+        return {
+          edge,
+          source,
+          target,
+          score: edge.weight,
+          key: edgePairKey(edge.source, edge.target),
+        };
+      })
+      .filter((item): item is FlowEdgeCandidate => item !== null);
 
     return CLUSTER_ORDER.flatMap((cluster, index) => {
-      const allRankedEdges = edges
-        .map((edge) => {
-          const source = nodeById.get(edge.source);
-          const target = nodeById.get(edge.target);
-
-          if (!source || !target) {
-            return null;
-          }
-
+      const seedEdges = allGraphCandidates
+        .map((item) => {
           const touchesCluster =
-            source.cluster === cluster || target.cluster === cluster;
+            item.source.cluster === cluster || item.target.cluster === cluster;
 
           if (!touchesCluster) {
             return null;
           }
 
           const isInternal =
-            source.cluster === cluster && target.cluster === cluster;
+            item.source.cluster === cluster && item.target.cluster === cluster;
 
           return {
-            edge,
-            source,
-            target,
-            score: edge.weight + (isInternal ? 3 : 0),
-            key: edgePairKey(edge.source, edge.target),
+            ...item,
+            score: item.edge.weight + (isInternal ? 3 : 0),
           };
         })
         .filter((item): item is FlowEdgeCandidate => item !== null)
         .sort((a, b) => b.score - a.score);
 
-      const rankedEdges = allRankedEdges.filter(
-        (item) => !claimedAnimatedEdges.has(item.key),
-      );
-      if (rankedEdges.length === 0) {
+      if (seedEdges.length === 0) {
         return [];
       }
+
+      // Seed each flow from its cluster, then let it see nearby graph edges.
+      // Without this expanded navigation set, a project can look connected on
+      // screen while the pulse only knows the edge it came from, causing a
+      // false "dead end" bounce.
+      const navigationEdgeKeys = new Set(seedEdges.map((item) => item.key));
+      let frontierNodes = new Set<string>();
+      for (const item of seedEdges) {
+        frontierNodes.add(item.source.id);
+        frontierNodes.add(item.target.id);
+      }
+
+      for (let depth = 0; depth < 2; depth++) {
+        const nextFrontier = new Set<string>();
+
+        for (const item of allGraphCandidates) {
+          if (
+            navigationEdgeKeys.has(item.key) ||
+            (!frontierNodes.has(item.source.id) &&
+              !frontierNodes.has(item.target.id))
+          ) {
+            continue;
+          }
+
+          navigationEdgeKeys.add(item.key);
+          nextFrontier.add(item.source.id);
+          nextFrontier.add(item.target.id);
+        }
+
+        frontierNodes = nextFrontier;
+        if (frontierNodes.size === 0) {
+          break;
+        }
+      }
+
+      const seedEdgeKeys = new Set(seedEdges.map((item) => item.key));
+      const rankedEdges = allGraphCandidates
+        .filter((item) => navigationEdgeKeys.has(item.key))
+        .map((item) => {
+          const isInternal =
+            item.source.cluster === cluster && item.target.cluster === cluster;
+          const touchesCluster =
+            item.source.cluster === cluster || item.target.cluster === cluster;
+          const isSeed = seedEdgeKeys.has(item.key);
+
+          return {
+            ...item,
+            score:
+              item.edge.weight +
+              (isSeed ? 4 : 0) +
+              (isInternal ? 3 : 0) +
+              (touchesCluster ? 1.4 : 0),
+          };
+        })
+        .sort((a, b) => b.score - a.score);
 
       const adjacency = new Map<string, FlowEdgeCandidate[]>();
 
@@ -2103,10 +2721,6 @@ export function ProjectGraph() {
             current = end;
           }
 
-          for (const item of componentEdges) {
-            claimedAnimatedEdges.add(item.key);
-          }
-
           return route;
         })
         .filter((route) => route.length > 0);
@@ -2123,6 +2737,8 @@ export function ProjectGraph() {
       }];
     });
   }, [edges, nodeById]);
+  const renderedFlowCount =
+    diagnostics.disableWaves || dragPerfActive ? 0 : clusterFlows.length;
 
   return (
     <motion.div
@@ -2130,7 +2746,13 @@ export function ProjectGraph() {
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: "-80px" }}
       transition={{ duration: 0.5, ease: "easeOut" }}
-      className="mx-auto max-w-[1280px]"
+      className="mx-auto max-w-[1280px] select-none"
+      draggable={false}
+      onDragStart={(event) => event.preventDefault()}
+      style={{
+        userSelect: "none",
+        WebkitUserSelect: "none",
+      }}
     >
       <div className="mb-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 font-mono text-[11px] text-zinc-500 xl:justify-start">
         <span className="inline-flex items-center gap-2 whitespace-nowrap">
@@ -2162,15 +2784,34 @@ export function ProjectGraph() {
         ))}
       </div>
 
-      <div className="glass relative overflow-hidden p-3 sm:p-5 md:p-6">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(125,211,252,0.08),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(125,211,252,0.06),transparent_32%)]" />
-        <div className="grid-overlay pointer-events-none absolute inset-0 opacity-50" />
+      <div
+        className={[
+          diagnostics.disableGraphGlass
+            || dragPerfActive
+            ? "relative overflow-hidden rounded-2xl border border-white/[0.06] bg-ink-900/45"
+            : "glass relative overflow-hidden",
+          "p-3 sm:p-5 md:p-6",
+        ].join(" ")}
+      >
+        {!diagnostics.disableGraphGlass && !dragPerfActive && (
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(125,211,252,0.08),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(125,211,252,0.06),transparent_32%)]" />
+        )}
+        <div
+          className={[
+            "grid-overlay pointer-events-none absolute inset-0",
+            diagnostics.disableGraphGlass || dragPerfActive ? "opacity-25" : "opacity-50",
+          ].join(" ")}
+        />
         <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.03] to-transparent" />
 
         <motion.div
-          className="relative aspect-[16/10] w-full"
+          className="relative isolate aspect-[16/10] w-full"
           onMouseLeave={() => setHoveredId(null)}
           initial={false}
+          style={{
+            contain: "layout paint style",
+            transform: "translateZ(0)",
+          }}
         >
           <svg
             ref={svgRef}
@@ -2181,7 +2822,8 @@ export function ProjectGraph() {
             role="img"
             style={{
               touchAction: draggingId ? "none" : "auto",
-              userSelect: draggingId ? "none" : "auto",
+              userSelect: "none",
+              WebkitUserSelect: "none",
             }}
           >
             <defs>
@@ -2194,7 +2836,7 @@ export function ProjectGraph() {
                 filterUnits="userSpaceOnUse"
                 colorInterpolationFilters="sRGB"
               >
-                <feGaussianBlur stdDeviation="3.2" result="blur" />
+                <feGaussianBlur stdDeviation={graphQuality.edgeGlowBlur} result="blur" />
                 <feMerge>
                   <feMergeNode in="blur" />
                   <feMergeNode in="SourceGraphic" />
@@ -2209,23 +2851,9 @@ export function ProjectGraph() {
                 filterUnits="userSpaceOnUse"
                 colorInterpolationFilters="sRGB"
               >
-                <feGaussianBlur stdDeviation="2.8" result="signalBlur" />
+                <feGaussianBlur stdDeviation={graphQuality.signalGlowBlur} result="signalBlur" />
                 <feMerge>
                   <feMergeNode in="signalBlur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
-              <filter
-                id="project-node-inner-ping"
-                x="-30%"
-                y="-30%"
-                width="160%"
-                height="160%"
-                colorInterpolationFilters="sRGB"
-              >
-                <feGaussianBlur stdDeviation="2.2" result="innerPingBlur" />
-                <feMerge>
-                  <feMergeNode in="innerPingBlur" />
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
@@ -2237,7 +2865,7 @@ export function ProjectGraph() {
                 height="280%"
                 colorInterpolationFilters="sRGB"
               >
-                <feGaussianBlur stdDeviation="7" result="nodeBlur" />
+                <feGaussianBlur stdDeviation={graphQuality.nodeGlowBlur} result="nodeBlur" />
                 <feMerge>
                   <feMergeNode in="nodeBlur" />
                   <feMergeNode in="SourceGraphic" />
@@ -2255,88 +2883,104 @@ export function ProjectGraph() {
               const activeWidth = Math.min(1.35 + visualWeight * 0.34, 2.5);
               const idleOpacity = 0.56;
               const activeOpacity = highlight ? 0.74 : 0.12;
-              const glowOpacity = activeId
+              const glowOpacity = (activeId
                 ? highlight
                   ? 0.36
                   : 0.04
-                : 0.34;
+                : 0.34) * graphQuality.glowOpacityScale;
+              const glowStrokeWidth = (activeId
+                ? (highlight ? activeWidth + 5.5 : 2.1)
+                : idleWidth + 4.8) * graphQuality.glowStrokeScale;
+              const softOpacity =
+                (activeId ? (highlight ? 0.32 : 0.035) : 0.25) *
+                graphQuality.glowOpacityScale;
+              const softStrokeWidth = (activeId
+                ? (highlight ? activeWidth + 2.7 : 1.2)
+                : idleWidth + 2.4) * graphQuality.glowStrokeScale;
+              const coreOpacity = activeId ? activeOpacity : idleOpacity;
+              const coreStrokeWidth = activeId
+                ? (highlight ? activeWidth : 0.55)
+                : idleWidth;
 
               return (
                 <g key={edgeId} pointerEvents="none">
                   <motion.line
+                    initial={false}
                     ref={(element) => setEdgeLineRef(edgeId, "glow", element)}
                     x1={endpoints.x1}
                     y1={endpoints.y1}
                     x2={endpoints.x2}
                     y2={endpoints.y2}
                     stroke={edge.color}
+                    opacity={glowOpacity}
+                    strokeWidth={glowStrokeWidth}
                     strokeLinecap="round"
-                    filter="url(#project-edge-glow)"
+                    filter={graphQuality.useFilteredEdgeGlow ? "url(#project-edge-glow)" : undefined}
                     animate={{
                       opacity: glowOpacity,
-                      strokeWidth: activeId
-                        ? (highlight ? activeWidth + 5.5 : 2.1)
-                        : idleWidth + 4.8,
+                      strokeWidth: glowStrokeWidth,
                     }}
                     transition={{
-                      opacity: { duration: shouldReduceMotion ? 0.01 : 0.22, ease: "easeOut" },
+                      opacity: { duration: graphMotionReduced ? 0.01 : 0.22, ease: "easeOut" },
                       strokeWidth: {
                         type: "spring",
                         stiffness: 240,
-                        damping: 28,
+                        damping: graphMotionReduced ? 1000 : 28,
                       },
                     }}
                   />
                   <motion.line
+                    initial={false}
                     ref={(element) => setEdgeLineRef(edgeId, "soft", element)}
                     x1={endpoints.x1}
                     y1={endpoints.y1}
                     x2={endpoints.x2}
                     y2={endpoints.y2}
                     stroke={edge.color}
+                    opacity={softOpacity}
+                    strokeWidth={softStrokeWidth}
                     strokeLinecap="round"
                     animate={{
-                      opacity: activeId ? (highlight ? 0.32 : 0.035) : 0.25,
-                      strokeWidth: activeId
-                        ? (highlight ? activeWidth + 2.7 : 1.2)
-                        : idleWidth + 2.4,
+                      opacity: softOpacity,
+                      strokeWidth: softStrokeWidth,
                     }}
                     transition={{
-                      opacity: { duration: 0.22, ease: "easeOut" },
+                      opacity: { duration: graphMotionReduced ? 0.01 : 0.22, ease: "easeOut" },
                       strokeWidth: {
                         type: "spring",
                         stiffness: 240,
-                        damping: 28,
+                        damping: graphMotionReduced ? 1000 : 28,
                       },
                     }}
                   />
                   <motion.line
+                    initial={false}
                     ref={(element) => setEdgeLineRef(edgeId, "core", element)}
                     x1={endpoints.x1}
                     y1={endpoints.y1}
                     x2={endpoints.x2}
                     y2={endpoints.y2}
                     stroke={edge.color}
+                    opacity={coreOpacity}
+                    strokeWidth={coreStrokeWidth}
                     strokeLinecap="round"
                     animate={{
-                      opacity: activeId ? activeOpacity : idleOpacity,
-                      strokeWidth: activeId
-                        ? (highlight ? activeWidth : 0.55)
-                        : idleWidth,
+                      opacity: coreOpacity,
+                      strokeWidth: coreStrokeWidth,
                     }}
                     transition={{
-                      opacity: { duration: shouldReduceMotion ? 0.01 : 0.22, ease: "easeOut" },
+                      opacity: { duration: graphMotionReduced ? 0.01 : 0.22, ease: "easeOut" },
                       strokeWidth: {
                         type: "spring",
                         stiffness: 240,
-                        damping: 28,
+                        damping: graphMotionReduced ? 1000 : 28,
                       },
                     }}
                   />
                 </g>
               );
             })}
-            {clusterFlows.map((flow) => {
+            {!diagnostics.disableWaves && !dragPerfActive && clusterFlows.map((flow) => {
               const hasHighlightedSegment = flow.routes.some((route) =>
                 route.some((segment) => isEdgeHighlighted(segment.edge)),
               );
@@ -2347,10 +2991,12 @@ export function ProjectGraph() {
                   key={flow.id}
                   flow={flow}
                   opacityPeak={opacityPeak}
-                  shouldReduceMotion={shouldReduceMotion}
+                  shouldReduceMotion={graphMotionReduced}
                   onNodeArrive={handleTubeArrival}
                   nodeAccentById={nodeAccentById}
                   livePositionsRef={livePositionsRef}
+                  graphQuality={graphQuality}
+                  onFrameMetric={recordGraphFrameMetric}
                 />
               );
             })}
@@ -2370,7 +3016,7 @@ export function ProjectGraph() {
               const safeNodeId = toSvgId(node.id);
               const pingClipId = `project-node-ping-clip-${safeNodeId}`;
               const isDraggingThis = draggingId === node.id;
-              const receiveActive = Boolean(arrivalPing) && !shouldReduceMotion;
+              const receiveActive = Boolean(arrivalPing) && !graphMotionReduced;
               const badgeFillOpacity = glowActive ? 0.22 : 1;
               const badgeStroke = glowActive
                 ? glowColor
@@ -2387,6 +3033,7 @@ export function ProjectGraph() {
               return (
                 <motion.g
                   key={node.id}
+                  initial={false}
                   ref={(element) => setNodeVisualRef(node.id, element)}
                   role="button"
                   tabIndex={0}
@@ -2396,7 +3043,7 @@ export function ProjectGraph() {
                   }}
                   transition={{
                     opacity: {
-                      duration: shouldReduceMotion ? 0.01 : 0.2,
+                      duration: graphMotionReduced ? 0.01 : 0.2,
                       ease: "easeOut",
                     },
                   }}
@@ -2458,19 +3105,28 @@ export function ProjectGraph() {
                       fill="transparent"
                       pointerEvents="all"
                     />
+                    <rect
+                      x={-node.labelWidth / 2 - 8}
+                      y={NODE_RADIUS + 8}
+                      width={node.labelWidth + 16}
+                      height={labelLines.length > 1 ? 46 : 30}
+                      rx={6}
+                      fill="transparent"
+                      pointerEvents="all"
+                    />
                     <motion.circle
                       aria-hidden="true"
                       cx={0}
                       cy={0}
                       r={NODE_RADIUS + 18}
                       fill={glowColor}
-                      filter="url(#project-node-glow)"
+                      filter={graphQuality.useFilteredEdgeGlow ? "url(#project-node-glow)" : undefined}
                       initial={false}
                       animate={{
-                        opacity: glowActive ? 0.16 : 0,
+                        opacity: glowActive ? 0.16 * graphQuality.glowOpacityScale : 0,
                       }}
                       transition={{
-                        duration: shouldReduceMotion ? 0.01 : 0.55,
+                        duration: graphMotionReduced ? 0.01 : 0.55,
                         ease: BLOOM_EASE_EXPO_OUT,
                       }}
                     />
@@ -2482,10 +3138,10 @@ export function ProjectGraph() {
                       fill={glowColor}
                       initial={false}
                       animate={{
-                        opacity: glowActive ? 0.08 : 0,
+                        opacity: glowActive ? 0.08 * graphQuality.glowOpacityScale : 0,
                       }}
                       transition={{
-                        duration: shouldReduceMotion ? 0.01 : 0.55,
+                        duration: graphMotionReduced ? 0.01 : 0.55,
                         ease: BLOOM_EASE_EXPO_OUT,
                       }}
                     />
@@ -2497,18 +3153,12 @@ export function ProjectGraph() {
                       fill={glowActive ? glowColor : "rgba(255,255,255,0.045)"}
                       initial={false}
                       animate={{
-                        r: receiveActive
-                          ? [
-                              NODE_RADIUS,
-                              NODE_RADIUS - 0.7,
-                              NODE_RADIUS + 1.15,
-                              NODE_RADIUS,
-                            ]
-                          : NODE_RADIUS,
+                        r: NODE_RADIUS,
                         fillOpacity: receiveActive
                           ? [
                               badgeFillOpacity,
-                              Math.max(0.28, badgeFillOpacity * 0.85),
+                              Math.max(0.22, badgeFillOpacity * 0.92),
+                              Math.max(0.26, badgeFillOpacity * 0.98),
                               badgeFillOpacity,
                             ]
                           : badgeFillOpacity,
@@ -2516,47 +3166,28 @@ export function ProjectGraph() {
                         strokeOpacity: receiveActive
                           ? [
                               badgeStrokeOpacity,
-                              Math.max(0.86, badgeStrokeOpacity),
+                              Math.max(0.72, badgeStrokeOpacity),
+                              Math.max(0.82, badgeStrokeOpacity),
                               badgeStrokeOpacity,
                             ]
                           : badgeStrokeOpacity,
-                        strokeWidth: receiveActive
-                          ? [
-                              badgeStrokeWidth,
-                              badgeStrokeWidth + 0.9,
-                              badgeStrokeWidth,
-                            ]
-                          : badgeStrokeWidth,
+                        strokeWidth: badgeStrokeWidth,
                       }}
                       transition={{
-                        duration: shouldReduceMotion ? 0.01 : 1.15,
+                        duration: graphMotionReduced ? 0.01 : 1.15,
                         ease: BLOOM_EASE_SLOW_IN_OUT,
-                        r: receiveActive
-                          ? {
-                              duration: BADGE_PING_DURATION,
-                              times: [0, 0.18, 0.54, 1],
-                              ease: BLOOM_EASE_SLOW_IN_OUT,
-                            }
-                          : undefined,
                         fillOpacity: receiveActive
                           ? {
                               duration: BADGE_PING_DURATION,
-                              times: [0, 0.36, 1],
-                              ease: BLOOM_EASE_SLOW_IN_OUT,
+                              times: [0, 0.32, 0.62, 1],
+                              ease: "linear",
                             }
                           : undefined,
                         strokeOpacity: receiveActive
                           ? {
                               duration: BADGE_PING_DURATION,
-                              times: [0, 0.42, 1],
-                              ease: BLOOM_EASE_SLOW_IN_OUT,
-                            }
-                          : undefined,
-                        strokeWidth: receiveActive
-                          ? {
-                              duration: BADGE_PING_DURATION,
-                              times: [0, 0.42, 1],
-                              ease: BLOOM_EASE_SLOW_IN_OUT,
+                              times: [0, 0.3, 0.62, 1],
+                              ease: "linear",
                             }
                           : undefined,
                       }}
@@ -2566,7 +3197,7 @@ export function ProjectGraph() {
                         key={`${node.id}-ping-${arrivalPing.token}`}
                         color={pingColor}
                         clipPathId={pingClipId}
-                        shouldReduceMotion={shouldReduceMotion}
+                        shouldReduceMotion={graphMotionReduced}
                       />
                     )}
                     <Icon
@@ -2610,12 +3241,133 @@ export function ProjectGraph() {
             })}
           </svg>
         </motion.div>
+        {graphDebugEnabled && (
+          <GraphPerformanceOverlay
+            profile={performanceProfile}
+            debugState={debugState}
+            snapshot={debugSnapshot}
+            nodeCount={nodes.length}
+            edgeCount={edges.length}
+            flowCount={renderedFlowCount}
+            pingCount={arrivalPingById.size}
+            diagnostics={diagnostics}
+            dragPerfActive={dragPerfActive}
+          />
+        )}
       </div>
 
       <div className="mt-5" aria-live="polite">
         <PreviewCard project={previewProject} mode={previewMode} />
       </div>
     </motion.div>
+  );
+}
+
+function GraphPerformanceOverlay({
+  profile,
+  debugState,
+  snapshot,
+  nodeCount,
+  edgeCount,
+  flowCount,
+  pingCount,
+  diagnostics,
+  dragPerfActive,
+}: {
+  profile: AdaptivePerformanceProfile;
+  debugState: ReturnType<typeof usePerformanceDebugState>;
+  snapshot: GraphDebugSnapshot;
+  nodeCount: number;
+  edgeCount: number;
+  flowCount: number;
+  pingCount: number;
+  diagnostics: ReturnType<typeof usePerformanceDiagnosticFlags>;
+  dragPerfActive: boolean;
+}) {
+  const animatedElementCount = edgeCount * 3 + flowCount * 3 + pingCount * 3;
+  const pointer = snapshot.pointer;
+
+  return (
+    <div
+      data-performance-debug="project-graph"
+      className="pointer-events-none absolute right-4 top-4 z-10 w-[260px] rounded-lg border border-accent/25 bg-ink-950/85 p-3 font-mono text-[10px] leading-relaxed text-zinc-300 shadow-[0_0_24px_rgba(0,0,0,0.35)] backdrop-blur-sm"
+    >
+      <div className="mb-1 flex items-center justify-between text-accent">
+        <span>Perf Debug</span>
+        <span>
+          {profile.quality}
+          {profile.qualitySource !== "auto" ? "*" : ""}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-x-3 gap-y-0.5">
+        <span>DPR</span>
+        <span className="text-right">{profile.dpr.toFixed(2)}</span>
+        <span>Viewport</span>
+        <span className="text-right">
+          {profile.viewportWidth}x{profile.viewportHeight}
+        </span>
+        <span>Pixels</span>
+        <span className="text-right">{(profile.pixelArea / 1_000_000).toFixed(1)}M</span>
+        <span>FPS</span>
+        <span className="text-right">{snapshot.fps.toFixed(0)}</span>
+        <span>Frame</span>
+        <span className="text-right">{snapshot.frameMs.toFixed(1)}ms</span>
+        <span>P95 / max</span>
+        <span className="text-right">
+          {snapshot.p95FrameMs.toFixed(1)} / {snapshot.maxFrameMs.toFixed(1)}ms
+        </span>
+        <span>Jank &gt;24ms</span>
+        <span className="text-right">{snapshot.jankPercent.toFixed(0)}%</span>
+        <span>Wave work</span>
+        <span className="text-right">{snapshot.waveFrameMs.toFixed(2)}ms</span>
+        <span>Path recalc</span>
+        <span className="text-right">{snapshot.relationCalcMs.toFixed(2)}ms</span>
+        <span>Graph rect</span>
+        <span className="text-right">
+          {snapshot.graphRect
+            ? `${snapshot.graphRect.width.toFixed(0)}x${snapshot.graphRect.height.toFixed(0)}`
+            : "-"}
+        </span>
+        <span>VV scale</span>
+        <span className="text-right">{snapshot.visualViewportScale.toFixed(2)}</span>
+        <span>Nodes / edges</span>
+        <span className="text-right">
+          {nodeCount} / {edgeCount}
+        </span>
+        <span>Animated elems</span>
+        <span className="text-right">{animatedElementCount}</span>
+        <span>Flows / pings</span>
+        <span className="text-right">
+          {flowCount} / {pingCount}
+        </span>
+        <span>Debug source</span>
+        <span className="text-right">{debugState.source}</span>
+        <span>Quality source</span>
+        <span className="text-right">{profile.qualitySource}</span>
+        <span>Diag flags</span>
+        <span className="text-right">
+          {[
+            diagnostics.staticMode ? "static" : "",
+            dragPerfActive ? "drag-perf" : "",
+            diagnostics.disableBackground ? "bg-off" : "",
+            diagnostics.disableGraphFilters ? "flat" : "",
+            diagnostics.disableWaves ? "waves-off" : "",
+            diagnostics.disableGraphGlass ? "glass-off" : "",
+          ].filter(Boolean).join(", ") || "none"}
+        </span>
+      </div>
+      {pointer && (
+        <div className="mt-2 border-t border-white/10 pt-2 text-zinc-400">
+          <div>{pointer.nodeId}</div>
+          <div>
+            client {pointer.clientX.toFixed(0)}, {pointer.clientY.toFixed(0)}
+          </div>
+          <div>
+            svg {pointer.svgX.toFixed(1)}, {pointer.svgY.toFixed(1)}
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2697,6 +3449,7 @@ function setStop(
   if (!element) {
     return;
   }
+
   element.setAttribute("offset", `${(clamp01(offset) * 100).toFixed(2)}%`);
   element.setAttribute("stop-opacity", clamp01(opacity).toFixed(3));
   element.setAttribute("stop-color", color);
@@ -2731,6 +3484,8 @@ function GraphTubeFlow({
   onNodeArrive,
   nodeAccentById,
   livePositionsRef,
+  graphQuality,
+  onFrameMetric,
 }: {
   flow: ClusterFlow;
   opacityPeak: number;
@@ -2738,6 +3493,8 @@ function GraphTubeFlow({
   onNodeArrive: (arrival: NodeArrival) => void;
   nodeAccentById: Map<string, string>;
   livePositionsRef: React.MutableRefObject<Map<string, LivePosition>>;
+  graphQuality: AdaptivePerformanceProfile["graph"];
+  onFrameMetric: (metric: GraphPerfMetric) => void;
 }) {
   const reduced = Boolean(shouldReduceMotion);
   const segmentDuration = reduced
@@ -2771,10 +3528,12 @@ function GraphTubeFlow({
   const intensityRef = useRef(intensity);
   const onArriveRef = useRef(onNodeArrive);
   const nodeAccentByIdRef = useRef(nodeAccentById);
+  const frameMetricRef = useRef(onFrameMetric);
   opacityPeakRef.current = opacityPeak;
   intensityRef.current = intensity;
   onArriveRef.current = onNodeArrive;
   nodeAccentByIdRef.current = nodeAccentById;
+  frameMetricRef.current = onFrameMetric;
 
   useEffect(() => {
     let frame = 0;
@@ -2791,13 +3550,16 @@ function GraphTubeFlow({
         return;
       }
 
+      const frameStart = window.performance.now();
       const peakOpacity = opacityPeakRef.current;
       const waveIntensity = intensityRef.current;
       const elapsedSeconds = Math.max(0, time / 1000 - flow.delay);
       const positions = livePositionsRef.current;
       let timing = timingRef.current;
+      let relationCalcMs = 0;
 
-      if (!timing || time - timing.updatedAt > 250) {
+      if (!timing || time - timing.updatedAt > graphQuality.timingRecalcMs) {
+        const relationCalcStart = window.performance.now();
         const segmentDurations = segments.map((segment) => {
           const start = positions.get(segment.startId);
           const end = positions.get(segment.endId);
@@ -2831,6 +3593,7 @@ function GraphTubeFlow({
           updatedAt: time,
         };
         timingRef.current = timing;
+        relationCalcMs = window.performance.now() - relationCalcStart;
       }
 
       const {
@@ -2912,6 +3675,10 @@ function GraphTubeFlow({
         }
         setSvgAttr(refs.tube, "opacity", 0);
         setSvgAttr(refs.channel, "opacity", 0);
+        frameMetricRef.current({
+          frameMs: window.performance.now() - frameStart,
+          relationCalcMs,
+        });
         frame = window.requestAnimationFrame(draw);
         return;
       }
@@ -3001,6 +3768,10 @@ function GraphTubeFlow({
         }
       }
 
+      frameMetricRef.current({
+        frameMs: window.performance.now() - frameStart,
+        relationCalcMs,
+      });
       frame = window.requestAnimationFrame(draw);
     };
 
@@ -3014,6 +3785,7 @@ function GraphTubeFlow({
     flow.delay,
     livePositionsRef,
     nodeHoldDuration,
+    graphQuality.timingRecalcMs,
     reduced,
     routeStartByIndex,
     routes,
@@ -3029,7 +3801,7 @@ function GraphTubeFlow({
     <g
       data-graph-tube-bulge="true"
       pointerEvents="none"
-      style={{ mixBlendMode: "screen" }}
+      style={graphQuality.useBlendMode ? { mixBlendMode: "screen" } : undefined}
     >
       <defs>
         <linearGradient
@@ -3099,12 +3871,13 @@ function BadgePing({
             : {
                 opacity: [
                   0,
-                  BADGE_PING_FACE_OPACITY * 0.03,
-                  BADGE_PING_FACE_OPACITY * 0.14,
-                  BADGE_PING_FACE_OPACITY * 0.42,
+                  BADGE_PING_FACE_OPACITY * 0.02,
+                  BADGE_PING_FACE_OPACITY * 0.08,
+                  BADGE_PING_FACE_OPACITY * 0.24,
+                  BADGE_PING_FACE_OPACITY * 0.52,
                   BADGE_PING_FACE_OPACITY,
-                  BADGE_PING_FACE_OPACITY * 0.68,
-                  BADGE_PING_FACE_OPACITY * 0.22,
+                  BADGE_PING_FACE_OPACITY * 0.62,
+                  BADGE_PING_FACE_OPACITY * 0.24,
                   0,
                 ],
               }
@@ -3114,70 +3887,7 @@ function BadgePing({
             ? BADGE_PING_DURATION_REDUCED
             : BADGE_PING_DURATION,
           times: shouldReduceMotion ? undefined : BADGE_PING_TIMES,
-          ease: BLOOM_EASE_SLOW_IN_OUT,
-        }}
-      />
-      <motion.circle
-        cx={0}
-        cy={0}
-        r={NODE_RADIUS * 0.94}
-        fill={color}
-        filter="url(#project-node-inner-ping)"
-        initial={{ opacity: 0 }}
-        animate={
-          shouldReduceMotion
-            ? { opacity: BADGE_PING_CORE_OPACITY }
-            : {
-                opacity: [
-                  0,
-                  BADGE_PING_CORE_OPACITY * 0.02,
-                  BADGE_PING_CORE_OPACITY * 0.12,
-                  BADGE_PING_CORE_OPACITY * 0.36,
-                  BADGE_PING_CORE_OPACITY,
-                  BADGE_PING_CORE_OPACITY * 0.5,
-                  BADGE_PING_CORE_OPACITY * 0.16,
-                  0,
-                ],
-              }
-        }
-        transition={{
-          duration: shouldReduceMotion
-            ? BADGE_PING_DURATION_REDUCED
-            : BADGE_PING_DURATION,
-          times: shouldReduceMotion ? undefined : BADGE_PING_TIMES,
-          ease: BLOOM_EASE_SLOW_IN_OUT,
-        }}
-      />
-      <motion.circle
-        cx={0}
-        cy={0}
-        r={NODE_RADIUS - 1.2}
-        fill="none"
-        stroke={color}
-        initial={{ opacity: 0, strokeWidth: 1 }}
-        animate={
-          shouldReduceMotion
-            ? { opacity: BADGE_PING_STROKE_OPACITY * 0.6, strokeWidth: 1.8 }
-            : {
-                opacity: [
-                  0,
-                  BADGE_PING_STROKE_OPACITY * 0.04,
-                  BADGE_PING_STROKE_OPACITY * 0.18,
-                  BADGE_PING_STROKE_OPACITY * 0.52,
-                  BADGE_PING_STROKE_OPACITY,
-                  BADGE_PING_STROKE_OPACITY * 0.62,
-                  BADGE_PING_STROKE_OPACITY * 0.18,
-                  0,
-                ],
-                strokeWidth: [1, 1.08, 1.35, 2.05, 2.45, 2.05, 1.35, 1],
-              }
-        }
-        transition={{
-          duration: shouldReduceMotion
-            ? BADGE_PING_DURATION_REDUCED
-            : BADGE_PING_DURATION,
-          times: shouldReduceMotion ? undefined : BADGE_PING_TIMES,
-          ease: BLOOM_EASE_SLOW_IN_OUT,
+          ease: "linear",
         }}
       />
     </g>
@@ -3208,6 +3918,8 @@ function PreviewCard({
 
   const badgeLabel =
     mode === "hovered" ? "Hovering" : mode === "pinned" ? "Pinned" : "Last viewed";
+  const metricItems = project.metrics.slice(0, 6);
+  const relationItems = project.relations.slice(0, 8);
 
   return (
     <motion.div
@@ -3309,13 +4021,41 @@ function PreviewCard({
 
           <div className="mt-5 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
             <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
-              What It Does
+              Engineering Signals
             </p>
-            <p className="mt-2 text-[13px] leading-6 text-zinc-400">
-              {project.blurb}. It combines the listed stack into a focused build
-              with working data flow, structure, and a clear project outcome.
-            </p>
+            <ul className="mt-3 grid gap-2">
+              {metricItems.map((metric) => (
+                <li
+                  key={metric}
+                  className="flex gap-2 text-[12px] leading-5 text-zinc-400"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="mt-2 inline-block h-1 w-1 shrink-0 rounded-full bg-accent/70"
+                  />
+                  <span>{metric}</span>
+                </li>
+              ))}
+            </ul>
           </div>
+
+          {relationItems.length > 0 && (
+            <div className="mt-4">
+              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+                Relation Tags
+              </p>
+              <ul className="mt-2 flex flex-wrap gap-1.5">
+                {relationItems.map((relation) => (
+                  <li
+                    key={relation}
+                    className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[10px] text-zinc-400"
+                  >
+                    {relation}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
           <div className="mt-5 flex flex-wrap gap-2 border-t border-white/[0.06] pt-4">
             <a
