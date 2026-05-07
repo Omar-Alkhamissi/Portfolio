@@ -43,9 +43,10 @@ type TubeSegment = {
 };
 
 type ClusterFlow = {
+  id: string;
   cluster: ClusterKey;
   delay: number;
-  segments: TubeSegment[];
+  routes: TubeSegment[][];
 };
 
 type FlowEdgeCandidate = {
@@ -56,7 +57,7 @@ type FlowEdgeCandidate = {
   key: string;
 };
 
-type ArrivalBloom = {
+type ArrivalPing = {
   token: number;
   color: string;
 };
@@ -91,18 +92,25 @@ const LINE_GAP = NODE_RADIUS + 3;
 const LABEL_GAP = 12;
 
 // ─── Animation tuning ────────────────────────────────────────────────────────
-// Wave (pressure / "water in a vein") — duration of one segment traversal.
+// Wave (pressure / "water in a vein") — fallback duration of one segment
+// traversal. Normal motion uses length-based timing below.
 const WAVE_SEGMENT_DURATION = 1.55;
 const WAVE_SEGMENT_DURATION_REDUCED = 3.6;
-// How much the wave bleeds into the adjacent segment around node junctions.
-// Expressed as a fraction of one segment duration.
-const WAVE_HANDOFF_OVERLAP = 0.12;
-// Bell-curve thickness — "spread" is the high-intensity core, "soft" is
-// the gentle outer falloff. Both expressed as a fraction of segment length.
-// A wider soft spread reads as a longer, more watery wave; tighter feels
-// like an electric pulse.
-const WAVE_SPREAD = 0.035;
-const WAVE_SOFT_SPREAD = 0.16;
+const WAVE_UNITS_PER_SECOND = 142;
+const WAVE_MIN_SEGMENT_DURATION = 0.92;
+const WAVE_MAX_SEGMENT_DURATION = 2.55;
+// Asymmetric liquid profile in viewBox units. Pixel-based lengths keep short
+// relations from collapsing into blocky square pulses.
+const WAVE_CORE_LENGTH = 3.2;
+const WAVE_FRONT_LENGTH = 18;
+const WAVE_TAIL_LENGTH = 34;
+const WAVE_WAKE_LENGTH = 50;
+const WAVE_WAKE_OPACITY = 0.09;
+const WAVE_COLOR_BLEND_DISTANCE = 0.2;
+const WAVE_COLOR_BLEND_STRENGTH = 0.74;
+// Fade the pulse as it enters/leaves a badge so the head never flashes on the
+// next relation before the badge ping finishes.
+const WAVE_NODE_ABSORB_DISTANCE = 0.12;
 // Blend factor between pure linear motion (0) and a full pendulum / smoothstep
 // (1). At 0 the wave reverses direction instantaneously at terminals. At 1
 // it slows to a stop and accelerates back, but the middle of each traversal
@@ -115,19 +123,23 @@ const WAVE_PEAK_OPACITY = 0.84;
 // Stroke width range for the active wave line.
 const WAVE_STROKE_BASE = 4.2;
 const WAVE_STROKE_PEAK = 9.8;
+const WAVE_STROKE_TAPER_MIN = 0.1;
+const WAVE_SHORT_SEGMENT_STROKE_SCALE = 0.68;
+const WAVE_CHANNEL_STROKE_BASE = 0.65;
+const WAVE_CHANNEL_STROKE_PEAK = 3.4;
 // Ambient channel glow under the wave path. Kept low so inactive lines are
 // not drowned out — set to 0 to fully match inactive edge brightness.
 const WAVE_CHANNEL_OPACITY = 0.018;
-// Badge bloom — an internal fill that grows inside the badge instead of
-// throwing rings outside it.
-const BADGE_BLOOM_DURATION = 4.4;
-const BADGE_BLOOM_FACE_OPACITY = 0.68;
-const BADGE_BLOOM_PEAK_OPACITY = 0.88;
-const BADGE_BLOOM_CORE_OPACITY = 0.3;
-const BADGE_BLOOM_RAMP_PORTION = 0.7;
-const BADGE_BLOOM_HOLD_PORTION = 0.1;
-// Used only for small hover/focus glow. The arrival bloom uses slower
-// in-out curves below so it doesn't front-load into a flash.
+// Badge ping — a short internal confirmation when the pressure wave reaches
+// the project badge. Clipped to the badge face, so it reads as a ping without
+// an outer ripple ring.
+const BADGE_PING_DURATION = 0.92;
+const BADGE_PING_DURATION_REDUCED = 0.01;
+const BADGE_PING_FACE_OPACITY = 0.58;
+const BADGE_PING_CORE_OPACITY = 0.24;
+const BADGE_PING_STROKE_OPACITY = 0.92;
+const BADGE_PING_TIMES = [0, 0.12, 0.26, 0.42, 0.52, 0.6, 0.68, 1];
+// Used for small hover/focus glow and the internal badge ping.
 const BLOOM_EASE_EXPO_OUT: [number, number, number, number] = [0.16, 1, 0.3, 1];
 const BLOOM_EASE_SLOW_IN_OUT: [number, number, number, number] = [0.45, 0, 0.2, 1];
 // Drag — how many viewport units the pointer must travel before a drag is
@@ -438,6 +450,39 @@ const CLUSTER_ANGLE_OFFSETS: Record<ClusterKey, number> = {
   data: 0.4,
 };
 
+const PROJECT_POSITION_OVERRIDES: Record<string, LivePosition> = {
+  "Real-Time Chat App": { x: 147, y: 183 },
+  "Groceries Mobile App": { x: 236, y: 63 },
+  "Travel Advisory Aggregator": { x: 348, y: 127 },
+  "Fragrance E-Commerce": { x: 436, y: 212 },
+  "Fast Food Ordering": { x: 735, y: 234 },
+  "Bookshelf Mobile App": { x: 167, y: 385 },
+  "Debug My Heart": { x: 303, y: 352 },
+  "Multiplayer Wordle": { x: 586, y: 333 },
+  "Stoichiometry Library": { x: 445, y: 498 },
+  "Employee Helpdesk Portal": { x: 1025, y: 368 },
+  "Order Management System": { x: 869, y: 482 },
+  "Data Warehouse ETL Pipeline": { x: 919, y: 665 },
+  "Drone Management System": { x: 1164, y: 444 },
+  "Employee Management System": { x: 1245, y: 559 },
+  "Family Genealogy Database": { x: 1089, y: 739 },
+  "Enigma Machine Simulator": { x: 884, y: 135 },
+  "Customer Data Storage": { x: 1159, y: 105 },
+  "Student Loan App": { x: 1157, y: 333 },
+  "Khronos Calendar Library": { x: 305, y: 539 },
+  "Expression Evaluator": { x: 233, y: 723 },
+  "Triage Priority Queue": { x: 155, y: 625 },
+  "Patient Diagnosis Classifier": { x: 382, y: 748 },
+  "Canadian Cities Analyzer": { x: 632, y: 482 },
+  "2D Parallax Arcade Game": { x: 780, y: 469 },
+  "Collaborative Drawing App": { x: 580, y: 595 },
+  "Document Factory": { x: 801, y: 594 },
+  "Course Grade Tracker": { x: 525, y: 694 },
+  "Stack Evaluator": { x: 597, y: 795 },
+  "Coffee Shop POS": { x: 749, y: 785 },
+  "Global Economics Reporter": { x: 854, y: 744 },
+};
+
 const weightOf = (tech: string) => TECH_WEIGHT[tech] ?? 0.4;
 
 function hashString(value: string) {
@@ -497,6 +542,98 @@ function fallbackEdgeColor(source: string, target: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+type RgbColor = { r: number; g: number; b: number };
+
+function parseColor(color: string): RgbColor | null {
+  const value = color.trim();
+  const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+
+  if (hex) {
+    const raw = hex[1];
+    const expanded = raw.length === 3
+      ? raw.split("").map((char) => char + char).join("")
+      : raw;
+
+    return {
+      r: Number.parseInt(expanded.slice(0, 2), 16),
+      g: Number.parseInt(expanded.slice(2, 4), 16),
+      b: Number.parseInt(expanded.slice(4, 6), 16),
+    };
+  }
+
+  const rgb = value.match(
+    /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)/i,
+  );
+
+  if (!rgb) {
+    return null;
+  }
+
+  return {
+    r: clamp(Number(rgb[1]), 0, 255),
+    g: clamp(Number(rgb[2]), 0, 255),
+    b: clamp(Number(rgb[3]), 0, 255),
+  };
+}
+
+function formatRgb(color: RgbColor) {
+  return `rgb(${Math.round(color.r)}, ${Math.round(color.g)}, ${Math.round(color.b)})`;
+}
+
+function mixColors(from: string, to: string, amount: number) {
+  const fromColor = parseColor(from);
+  const toColor = parseColor(to);
+
+  if (!fromColor || !toColor) {
+    return amount < 0.5 ? from : to;
+  }
+
+  const t = clamp01(amount);
+  return formatRgb({
+    r: fromColor.r + (toColor.r - fromColor.r) * t,
+    g: fromColor.g + (toColor.g - fromColor.g) * t,
+    b: fromColor.b + (toColor.b - fromColor.b) * t,
+  });
+}
+
+function seededRandom(seed: number) {
+  let value = seed >>> 0;
+
+  return () => {
+    value += 0x6d2b79f5;
+    let mixed = value;
+    mixed = Math.imul(mixed ^ (mixed >>> 15), mixed | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function pickWeighted<T>(
+  items: T[],
+  scoreOf: (item: T) => number,
+  random = Math.random,
+) {
+  if (items.length === 0) {
+    return undefined;
+  }
+
+  const weighted = items.map((item) => ({
+    item,
+    weight: Math.max(0.1, scoreOf(item)),
+  }));
+  const total = weighted.reduce((sum, item) => sum + item.weight, 0);
+  let cursor = random() * total;
+
+  for (const item of weighted) {
+    cursor -= item.weight;
+    if (cursor <= 0) {
+      return item.item;
+    }
+  }
+
+  return weighted[weighted.length - 1].item;
 }
 
 function estimateLabelWidth(title: string) {
@@ -1188,6 +1325,47 @@ function runLayout(nodes: Node[], edges: Edge[], ticks = 220) {
   resolveFootprintOverlaps(nodes);
 }
 
+function applyProjectPositionOverrides(nodes: Node[]) {
+  for (const node of nodes) {
+    const override = PROJECT_POSITION_OVERRIDES[node.id];
+
+    if (!override) {
+      continue;
+    }
+
+    node.x = override.x;
+    node.y = override.y;
+    node.homeX = override.x;
+    node.homeY = override.y;
+    node.vx = 0;
+    node.vy = 0;
+    clampNodeToViewport(node);
+  }
+}
+
+function distanceBetween(source: LivePosition, target: LivePosition) {
+  const dx = target.x - source.x;
+  const dy = target.y - source.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function waveSegmentDurationFor(
+  source: LivePosition,
+  target: LivePosition,
+  reduced: boolean,
+) {
+  if (reduced) {
+    return WAVE_SEGMENT_DURATION_REDUCED;
+  }
+
+  const travelDistance = Math.max(70, distanceBetween(source, target) - LINE_GAP * 2);
+  return clamp(
+    travelDistance / WAVE_UNITS_PER_SECOND,
+    WAVE_MIN_SEGMENT_DURATION,
+    WAVE_MAX_SEGMENT_DURATION,
+  );
+}
+
 function getEdgeEndpoints(source: LivePosition, target: LivePosition): EdgeEndpoints {
   const dx = target.x - source.x;
   const dy = target.y - source.y;
@@ -1288,7 +1466,7 @@ export function ProjectGraph() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [lastViewedId, setLastViewedId] = useState<string>(projects[0].title);
-  const [arrivalBloomById, setArrivalBloomById] = useState<Map<string, ArrivalBloom>>(
+  const [arrivalPingById, setArrivalPingById] = useState<Map<string, ArrivalPing>>(
     () => new Map(),
   );
   // Drag overrides for project nodes. Sparse — only contains entries for
@@ -1297,7 +1475,7 @@ export function ProjectGraph() {
     () => new Map(),
   );
   const [draggingId, setDraggingId] = useState<string | null>(null);
-  const arrivalBloomTimers = useRef<Map<string, number>>(new Map());
+  const arrivalPingTimers = useRef<Map<string, number>>(new Map());
   const shouldReduceMotion = useReducedMotion();
   // Ref consumed by GraphTubeFlow rAF loop so the wave reads up-to-the-frame
   // node coordinates without forcing the flow component to re-render.
@@ -1326,6 +1504,7 @@ export function ProjectGraph() {
   const { nodes, edges } = useMemo(() => {
     const graph = buildGraph(projects);
     runLayout(graph.nodes, graph.edges);
+    applyProjectPositionOverrides(graph.nodes);
     return graph;
   }, []);
 
@@ -1368,7 +1547,7 @@ export function ProjectGraph() {
 
   useEffect(
     () => () => {
-      for (const timer of arrivalBloomTimers.current.values()) {
+      for (const timer of arrivalPingTimers.current.values()) {
         window.clearTimeout(timer);
       }
     },
@@ -1378,7 +1557,7 @@ export function ProjectGraph() {
   const handleTubeArrival = useCallback((arrival: NodeArrival) => {
     const token = window.performance.now();
 
-    setArrivalBloomById((current) => {
+    setArrivalPingById((current) => {
       const next = new Map(current);
       next.set(arrival.nodeId, {
         token,
@@ -1387,16 +1566,16 @@ export function ProjectGraph() {
       return next;
     });
 
-    const existingTimer = arrivalBloomTimers.current.get(arrival.nodeId);
+    const existingTimer = arrivalPingTimers.current.get(arrival.nodeId);
     if (existingTimer) {
       window.clearTimeout(existingTimer);
     }
 
     const timer = window.setTimeout(() => {
-      setArrivalBloomById((current) => {
-        const activeBloom = current.get(arrival.nodeId);
+      setArrivalPingById((current) => {
+        const activePing = current.get(arrival.nodeId);
 
-        if (!activeBloom || activeBloom.token !== token) {
+        if (!activePing || activePing.token !== token) {
           return current;
         }
 
@@ -1404,10 +1583,10 @@ export function ProjectGraph() {
         next.delete(arrival.nodeId);
         return next;
       });
-      arrivalBloomTimers.current.delete(arrival.nodeId);
-    }, BADGE_BLOOM_DURATION * 1000 + 140);
+      arrivalPingTimers.current.delete(arrival.nodeId);
+    }, BADGE_PING_DURATION * 1000 + 140);
 
-    arrivalBloomTimers.current.set(arrival.nodeId, timer);
+    arrivalPingTimers.current.set(arrival.nodeId, timer);
   }, []);
 
   const activeId = hoveredId ?? pinnedId;
@@ -1764,9 +1943,7 @@ export function ProjectGraph() {
       const rankedEdges = allRankedEdges.filter(
         (item) => !claimedAnimatedEdges.has(item.key),
       );
-      const best = rankedEdges[0];
-
-      if (!best) {
+      if (rankedEdges.length === 0) {
         return [];
       }
 
@@ -1782,92 +1959,168 @@ export function ProjectGraph() {
         adjacency.set(item.target.id, targetList);
       }
 
-      let current = best.source.cluster === cluster ? best.source : best.target;
-      let previousNodeId = "";
-      let previousEdgeKey = "";
-      const visitedEdges = new Set<string>();
-      const visitedNodeCount = new Map<string, number>([[current.id, 1]]);
-      const routeLength = rankedEdges.length;
-      const segments: TubeSegment[] = [];
-
-      for (let step = 0; step < routeLength; step++) {
-        const connected = adjacency.get(current.id) ?? [];
-        const edgeScore = (item: FlowEdgeCandidate, from: Node) => {
-          const other = item.source.id === from.id ? item.target : item.source;
-          const nodeVisits = visitedNodeCount.get(other.id) ?? 0;
-          const connectedBonus =
-            item.source.id === from.id || item.target.id === from.id ? 4 : 0;
-
-          return (
-            item.score +
-            connectedBonus +
-            (nodeVisits === 0 ? 5 : -nodeVisits * 3) -
-            (item.key === previousEdgeKey ? 20 : 0) -
-            (other.id === previousNodeId ? 10 : 0)
-          );
-        };
-
-        const connectedFresh = connected.filter(
-          (item) => !visitedEdges.has(item.key) && item.key !== previousEdgeKey,
-        );
-        let chosen = [...connectedFresh].sort(
-          (a, b) => edgeScore(b, current) - edgeScore(a, current),
-        )[0];
-
-        if (!chosen) {
-          const freshGlobal = rankedEdges.filter(
-            (item) => !visitedEdges.has(item.key),
-          );
-
-          chosen = [...freshGlobal].sort((a, b) => {
-            const aTouches =
-              a.source.id === current.id || a.target.id === current.id ? 1 : 0;
-            const bTouches =
-              b.source.id === current.id || b.target.id === current.id ? 1 : 0;
-
-            return bTouches - aTouches || b.score - a.score;
-          })[0];
-        }
-
-        if (!chosen) {
-          break;
-        }
-
-        const connectedToCurrent =
-          chosen.source.id === current.id || chosen.target.id === current.id;
-        const start = connectedToCurrent
-          ? current
-          : chosen.source.cluster === cluster
-            ? chosen.source
-            : chosen.target;
-        const end = chosen.source.id === start.id ? chosen.target : chosen.source;
-
-        segments.push({
-          edge: chosen.edge,
-          startId: start.id,
-          endId: end.id,
-        });
-
-        previousNodeId = start.id;
-        previousEdgeKey = chosen.key;
-        visitedEdges.add(chosen.key);
-        visitedNodeCount.set(end.id, (visitedNodeCount.get(end.id) ?? 0) + 1);
-        current = end;
+      for (const connected of adjacency.values()) {
+        connected.sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
       }
 
-      for (const segment of segments) {
-        claimedAnimatedEdges.add(edgePairKey(segment.edge.source, segment.edge.target));
+      const unvisitedComponentEdges = new Set(rankedEdges.map((item) => item.key));
+      const components: FlowEdgeCandidate[][] = [];
+
+      for (const seedEdge of rankedEdges) {
+        if (!unvisitedComponentEdges.has(seedEdge.key)) {
+          continue;
+        }
+
+        const componentKeys = new Set<string>();
+        const nodeQueue = [seedEdge.source.id, seedEdge.target.id];
+        const seenNodes = new Set<string>();
+
+        unvisitedComponentEdges.delete(seedEdge.key);
+        componentKeys.add(seedEdge.key);
+
+        while (nodeQueue.length > 0) {
+          const nodeId = nodeQueue.shift()!;
+
+          if (seenNodes.has(nodeId)) {
+            continue;
+          }
+
+          seenNodes.add(nodeId);
+
+          for (const item of adjacency.get(nodeId) ?? []) {
+            if (!unvisitedComponentEdges.has(item.key)) {
+              continue;
+            }
+
+            unvisitedComponentEdges.delete(item.key);
+            componentKeys.add(item.key);
+            nodeQueue.push(item.source.id, item.target.id);
+          }
+        }
+
+        components.push(rankedEdges.filter((item) => componentKeys.has(item.key)));
       }
 
-      return segments.length > 0
-        ? [
-            {
-              cluster,
-              delay: index * 0.24,
-              segments,
-            },
-          ]
-        : [];
+      const routes = components
+        .map((componentEdges, componentIndex) => {
+          const componentKeys = new Set(componentEdges.map((item) => item.key));
+          const edgeVisits = new Map(componentEdges.map((item) => [item.key, 0]));
+          const reachedNodes = new Set<string>();
+          const random = seededRandom(
+            hashString(`${cluster}:${componentIndex}:${componentEdges.map((item) => item.key).join("|")}`),
+          );
+          const componentNodes = new Map<string, Node>();
+
+          for (const item of componentEdges) {
+            componentNodes.set(item.source.id, item.source);
+            componentNodes.set(item.target.id, item.target);
+          }
+
+          const startCandidates = [...componentNodes.values()].sort((a, b) => {
+            const degreeA = (adjacency.get(a.id) ?? []).filter((item) =>
+              componentKeys.has(item.key),
+            ).length;
+            const degreeB = (adjacency.get(b.id) ?? []).filter((item) =>
+              componentKeys.has(item.key),
+            ).length;
+
+            return (
+              degreeB - degreeA ||
+              (b.cluster === cluster ? 1 : 0) - (a.cluster === cluster ? 1 : 0) ||
+              a.id.localeCompare(b.id)
+            );
+          });
+          let current = startCandidates[0];
+
+          if (!current) {
+            return [];
+          }
+
+          const route: TubeSegment[] = [];
+          let previousEdgeKey = "";
+          const targetSteps = clamp(componentEdges.length * 10, 24, 96);
+
+          for (let step = 0; step < targetSteps; step++) {
+            const connected = (adjacency.get(current.id) ?? []).filter((item) =>
+              componentKeys.has(item.key),
+            );
+
+            if (connected.length === 0) {
+              break;
+            }
+
+            // Backtrack only at a true dead end. If another real relation is
+            // available, the wave must move forward through the graph instead.
+            const forwardOptions =
+              connected.length > 1
+                ? connected.filter((item) => item.key !== previousEdgeKey)
+                : connected;
+            const options = forwardOptions.length > 0 ? forwardOptions : connected;
+            const minVisits = Math.min(
+              ...options.map((item) => edgeVisits.get(item.key) ?? 0),
+            );
+            const leastVisited = options.filter(
+              (item) => (edgeVisits.get(item.key) ?? 0) === minVisits,
+            );
+            const freshNodeOptions = leastVisited.filter((item) => {
+              const other = item.source.id === current.id ? item.target : item.source;
+              return !reachedNodes.has(other.id);
+            });
+            const candidatePool =
+              freshNodeOptions.length > 0 ? freshNodeOptions : leastVisited;
+            const chosen = pickWeighted(
+              candidatePool,
+              (item) => {
+                const other =
+                  item.source.id === current.id ? item.target : item.source;
+                const clusterBonus =
+                  other.cluster === cluster || current.cluster === cluster ? 3 : 0;
+                const freshNodeBonus = reachedNodes.has(other.id) ? 0 : 5;
+                const visitPenalty = (edgeVisits.get(item.key) ?? 0) * 4;
+
+                return item.score + clusterBonus + freshNodeBonus - visitPenalty;
+              },
+              random,
+            );
+
+            if (!chosen) {
+              break;
+            }
+
+            const start = current;
+            const end = chosen.source.id === start.id ? chosen.target : chosen.source;
+
+            route.push({
+              edge: chosen.edge,
+              startId: start.id,
+              endId: end.id,
+            });
+
+            edgeVisits.set(chosen.key, (edgeVisits.get(chosen.key) ?? 0) + 1);
+            reachedNodes.add(start.id);
+            reachedNodes.add(end.id);
+            previousEdgeKey = chosen.key;
+            current = end;
+          }
+
+          for (const item of componentEdges) {
+            claimedAnimatedEdges.add(item.key);
+          }
+
+          return route;
+        })
+        .filter((route) => route.length > 0);
+
+      if (routes.length === 0) {
+        return [];
+      }
+
+      return [{
+        id: cluster,
+        cluster,
+        delay: index * 0.24,
+        routes,
+      }];
     });
   }, [edges, nodeById]);
 
@@ -1934,10 +2187,11 @@ export function ProjectGraph() {
             <defs>
               <filter
                 id="project-edge-glow"
-                x="-40%"
-                y="-40%"
-                width="180%"
-                height="180%"
+                x={-80}
+                y={-80}
+                width={VIEWBOX_W + 160}
+                height={VIEWBOX_H + 160}
+                filterUnits="userSpaceOnUse"
                 colorInterpolationFilters="sRGB"
               >
                 <feGaussianBlur stdDeviation="3.2" result="blur" />
@@ -1948,10 +2202,11 @@ export function ProjectGraph() {
               </filter>
               <filter
                 id="project-signal-glow"
-                x="-90%"
-                y="-90%"
-                width="280%"
-                height="280%"
+                x={-80}
+                y={-80}
+                width={VIEWBOX_W + 160}
+                height={VIEWBOX_H + 160}
+                filterUnits="userSpaceOnUse"
                 colorInterpolationFilters="sRGB"
               >
                 <feGaussianBlur stdDeviation="2.8" result="signalBlur" />
@@ -1961,16 +2216,16 @@ export function ProjectGraph() {
                 </feMerge>
               </filter>
               <filter
-                id="project-node-inner-bloom"
+                id="project-node-inner-ping"
                 x="-30%"
                 y="-30%"
                 width="160%"
                 height="160%"
                 colorInterpolationFilters="sRGB"
               >
-                <feGaussianBlur stdDeviation="2.2" result="innerBloomBlur" />
+                <feGaussianBlur stdDeviation="2.2" result="innerPingBlur" />
                 <feMerge>
-                  <feMergeNode in="innerBloomBlur" />
+                  <feMergeNode in="innerPingBlur" />
                   <feMergeNode in="SourceGraphic" />
                 </feMerge>
               </filter>
@@ -2082,18 +2337,19 @@ export function ProjectGraph() {
               );
             })}
             {clusterFlows.map((flow) => {
-              const hasHighlightedSegment = flow.segments.some((segment) =>
-                isEdgeHighlighted(segment.edge),
+              const hasHighlightedSegment = flow.routes.some((route) =>
+                route.some((segment) => isEdgeHighlighted(segment.edge)),
               );
               const opacityPeak = activeId && !hasHighlightedSegment ? 0.52 : 1;
 
               return (
                 <GraphTubeFlow
-                  key={flow.cluster}
+                  key={flow.id}
                   flow={flow}
                   opacityPeak={opacityPeak}
                   shouldReduceMotion={shouldReduceMotion}
                   onNodeArrive={handleTubeArrival}
+                  nodeAccentById={nodeAccentById}
                   livePositionsRef={livePositionsRef}
                 />
               );
@@ -2101,22 +2357,28 @@ export function ProjectGraph() {
             {liveNodes.map((node) => {
               const Icon = node.project.icon;
               const focused = activeId === node.id;
-              const arrivalBloom = arrivalBloomById.get(node.id);
+              const arrivalPing = arrivalPingById.get(node.id);
               const dim = !isHighlighted(node.id);
               const labelLines = splitLabel(node.project.title);
               const accentColor =
                 activeAccentById.get(node.id) ??
                 nodeAccentById.get(node.id) ??
                 "#7dd3fc";
-              const bloomColor = arrivalBloom?.color ?? accentColor;
+              const pingColor = arrivalPing?.color ?? accentColor;
               const glowColor = accentColor;
               const glowActive = focused;
               const safeNodeId = toSvgId(node.id);
-              const bloomClipId = `project-node-bloom-clip-${safeNodeId}`;
-              const bloomGradientId = arrivalBloom
-                ? `project-node-bloom-fill-${safeNodeId}-${Math.round(arrivalBloom.token)}`
-                : "";
+              const pingClipId = `project-node-ping-clip-${safeNodeId}`;
               const isDraggingThis = draggingId === node.id;
+              const receiveActive = Boolean(arrivalPing) && !shouldReduceMotion;
+              const badgeFillOpacity = glowActive ? 0.22 : 1;
+              const badgeStroke = glowActive
+                ? glowColor
+                : dim
+                  ? "rgba(255,255,255,0.08)"
+                  : accentColor;
+              const badgeStrokeOpacity = glowActive ? 0.88 : dim ? 1 : 0.42;
+              const badgeStrokeWidth = glowActive ? 2 : 1;
               const visualPosition =
                 dragStateRef.current?.nodeId === node.id
                   ? livePositionsRef.current.get(node.id) ?? node
@@ -2185,23 +2447,9 @@ export function ProjectGraph() {
                   */}
                   <g>
                     <defs>
-                      <clipPath id={bloomClipId}>
+                      <clipPath id={pingClipId}>
                         <circle cx={0} cy={0} r={NODE_RADIUS - 0.6} />
                       </clipPath>
-                      {arrivalBloom && (
-                        <radialGradient
-                          id={bloomGradientId}
-                          gradientUnits="userSpaceOnUse"
-                          cx={0}
-                          cy={0}
-                          r={NODE_RADIUS * 1.85}
-                        >
-                          <stop offset="0%" stopColor={bloomColor} stopOpacity="1" />
-                          <stop offset="38%" stopColor={bloomColor} stopOpacity="0.82" />
-                          <stop offset="72%" stopColor={bloomColor} stopOpacity="0.48" />
-                          <stop offset="100%" stopColor={bloomColor} stopOpacity="0.12" />
-                        </radialGradient>
-                      )}
                     </defs>
                     <circle
                       cx={0}
@@ -2249,26 +2497,75 @@ export function ProjectGraph() {
                       fill={glowActive ? glowColor : "rgba(255,255,255,0.045)"}
                       initial={false}
                       animate={{
-                        fillOpacity: glowActive ? 0.22 : 1,
-                        stroke: glowActive
-                            ? glowColor
-                            : dim
-                              ? "rgba(255,255,255,0.08)"
-                              : accentColor,
-                        strokeOpacity: glowActive ? 0.88 : dim ? 1 : 0.42,
-                        strokeWidth: glowActive ? 2 : 1,
+                        r: receiveActive
+                          ? [
+                              NODE_RADIUS,
+                              NODE_RADIUS - 0.7,
+                              NODE_RADIUS + 1.15,
+                              NODE_RADIUS,
+                            ]
+                          : NODE_RADIUS,
+                        fillOpacity: receiveActive
+                          ? [
+                              badgeFillOpacity,
+                              Math.max(0.28, badgeFillOpacity * 0.85),
+                              badgeFillOpacity,
+                            ]
+                          : badgeFillOpacity,
+                        stroke: badgeStroke,
+                        strokeOpacity: receiveActive
+                          ? [
+                              badgeStrokeOpacity,
+                              Math.max(0.86, badgeStrokeOpacity),
+                              badgeStrokeOpacity,
+                            ]
+                          : badgeStrokeOpacity,
+                        strokeWidth: receiveActive
+                          ? [
+                              badgeStrokeWidth,
+                              badgeStrokeWidth + 0.9,
+                              badgeStrokeWidth,
+                            ]
+                          : badgeStrokeWidth,
                       }}
                       transition={{
                         duration: shouldReduceMotion ? 0.01 : 1.15,
                         ease: BLOOM_EASE_SLOW_IN_OUT,
+                        r: receiveActive
+                          ? {
+                              duration: BADGE_PING_DURATION,
+                              times: [0, 0.18, 0.54, 1],
+                              ease: BLOOM_EASE_SLOW_IN_OUT,
+                            }
+                          : undefined,
+                        fillOpacity: receiveActive
+                          ? {
+                              duration: BADGE_PING_DURATION,
+                              times: [0, 0.36, 1],
+                              ease: BLOOM_EASE_SLOW_IN_OUT,
+                            }
+                          : undefined,
+                        strokeOpacity: receiveActive
+                          ? {
+                              duration: BADGE_PING_DURATION,
+                              times: [0, 0.42, 1],
+                              ease: BLOOM_EASE_SLOW_IN_OUT,
+                            }
+                          : undefined,
+                        strokeWidth: receiveActive
+                          ? {
+                              duration: BADGE_PING_DURATION,
+                              times: [0, 0.42, 1],
+                              ease: BLOOM_EASE_SLOW_IN_OUT,
+                            }
+                          : undefined,
                       }}
                     />
-                    {arrivalBloom && (
-                      <BadgeBloom
-                        key={`${node.id}-bloom-${arrivalBloom.token}`}
-                        color={bloomColor}
-                        clipPathId={bloomClipId}
-                        gradientId={bloomGradientId}
+                    {arrivalPing && (
+                      <BadgePing
+                        key={`${node.id}-ping-${arrivalPing.token}`}
+                        color={pingColor}
+                        clipPathId={pingClipId}
                         shouldReduceMotion={shouldReduceMotion}
                       />
                     )}
@@ -2348,32 +2645,47 @@ function smoothstep(value: number) {
   return t * t * (3 - 2 * t);
 }
 
-// Wave profile — a *Hann window* (raised cosine). C¹-continuous everywhere,
-// which is the technical reason the wave looks "silky": the derivative is
-// zero at the very edge of the bell, so the wave fades to invisible without
-// any perceptible ramp-off seam. The flat-core variant of our previous
-// profile had a derivative kink right at `dist == spread` that contributed
-// to the slightly "stepped" feel even when the math looked smooth on paper.
-//
-// `spread` is the inner core where intensity is held at 1.0 (gives the
-// pulse a bit of body). `softSpread` is where the wave falls fully to 0.
+// Liquid profile: compact rounded head, softer tail, and a faint residual wake.
+// The asymmetry makes the pulse feel like pressure moving through a vein rather
+// than a symmetric laser dot.
 function waveProfile(
   position: number,
   center: number,
-  spread: number,
-  softSpread: number,
+  visibleLineLength: number,
 ) {
-  const dist = Math.abs(position - center);
-  if (dist >= softSpread) {
-    return 0;
-  }
-  if (dist <= spread) {
+  const delta = (position - center) * visibleLineLength;
+  const dist = Math.abs(delta);
+
+  if (dist <= WAVE_CORE_LENGTH) {
     return 1;
   }
-  const t = (dist - spread) / Math.max(softSpread - spread, 1e-4);
-  // Half of one cosine period — peaks at 1 when t=0, smoothly to 0 when t=1,
-  // and crucially the derivative is 0 at both ends.
-  return (1 + Math.cos(Math.PI * t)) * 0.5;
+
+  if (delta > 0) {
+    if (dist >= WAVE_FRONT_LENGTH) {
+      return 0;
+    }
+
+    const t =
+      (dist - WAVE_CORE_LENGTH) /
+      Math.max(WAVE_FRONT_LENGTH - WAVE_CORE_LENGTH, 1e-4);
+    return (1 + Math.cos(Math.PI * t)) * 0.5;
+  }
+
+  if (dist < WAVE_TAIL_LENGTH) {
+    const t =
+      (dist - WAVE_CORE_LENGTH) /
+      Math.max(WAVE_TAIL_LENGTH - WAVE_CORE_LENGTH, 1e-4);
+    return (1 + Math.cos(Math.PI * t)) * 0.5;
+  }
+
+  if (dist < WAVE_WAKE_LENGTH) {
+    const t =
+      (dist - WAVE_TAIL_LENGTH) /
+      Math.max(WAVE_WAKE_LENGTH - WAVE_TAIL_LENGTH, 1e-4);
+    return WAVE_WAKE_OPACITY * (1 - smoothstep(t));
+  }
+
+  return 0;
 }
 
 function setStop(
@@ -2390,226 +2702,302 @@ function setStop(
   element.setAttribute("stop-color", color);
 }
 
-// One slice of the wave system — owns a single segment's `<line>`, gradient,
-// and stop refs. The parent flow component drives all slices from one rAF.
-type SegmentSliceRefs = {
+// One reusable active wave per cluster. The route can be long, but only one
+// relation is visible at a time, so we update these refs in place instead of
+// rendering hidden SVG nodes for every future segment.
+type TubeFlowRefs = {
   tube: SVGLineElement | null;
   channel: SVGLineElement | null;
   gradient: SVGLinearGradientElement | null;
   stops: (SVGStopElement | null)[];
 };
 
+type TubeFlowTiming = {
+  segmentDurations: number[];
+  slotDurations: number[];
+  routeDurations: number[];
+  traversalDuration: number;
+  updatedAt: number;
+};
+
 // Fixed offsets used for the gradient stops. A denser set lets the compact
 // wave move smoothly instead of popping from one coarse stop to the next.
-const STOP_OFFSETS = Array.from({ length: 15 }, (_, index) => index / 14);
+const STOP_OFFSETS = Array.from({ length: 21 }, (_, index) => index / 20);
 
 function GraphTubeFlow({
   flow,
   opacityPeak,
   shouldReduceMotion,
   onNodeArrive,
+  nodeAccentById,
   livePositionsRef,
 }: {
   flow: ClusterFlow;
   opacityPeak: number;
   shouldReduceMotion: boolean | null;
   onNodeArrive: (arrival: NodeArrival) => void;
+  nodeAccentById: Map<string, string>;
   livePositionsRef: React.MutableRefObject<Map<string, LivePosition>>;
 }) {
   const reduced = Boolean(shouldReduceMotion);
   const segmentDuration = reduced
     ? WAVE_SEGMENT_DURATION_REDUCED
     : WAVE_SEGMENT_DURATION;
+  const nodeHoldDuration = reduced ? BADGE_PING_DURATION_REDUCED : BADGE_PING_DURATION;
   const intensity = reduced ? 0.55 : 1;
-  const gradientPrefix = `project-tube-pressure-${flow.cluster}`;
-  const segments = flow.segments;
-  // Allocate one ref bag per segment. Recreated when segment count changes,
-  // which only happens when the static topology rebuilds (never during drag).
-  const sliceRefs = useRef<SegmentSliceRefs[]>([]);
-  if (sliceRefs.current.length !== segments.length) {
-    sliceRefs.current = segments.map(() => ({
-      tube: null,
-      channel: null,
-      gradient: null,
-      stops: Array(STOP_OFFSETS.length).fill(null),
-    }));
-  }
+  const gradientId = `project-tube-pressure-${flow.id}`;
+  const routes = flow.routes;
+  const segments = useMemo(() => routes.flat(), [routes]);
+  const routeStartByIndex = useMemo(() => {
+    let nextStart = 0;
+
+    return routes.map((route) => {
+      const start = nextStart;
+      nextStart += route.length;
+      return start;
+    });
+  }, [routes]);
+  const flowRefs = useRef<TubeFlowRefs>({
+    tube: null,
+    channel: null,
+    gradient: null,
+    stops: Array(STOP_OFFSETS.length).fill(null),
+  });
+  const timingRef = useRef<TubeFlowTiming | null>(null);
 
   // Track the latest opacity peak / intensity so we can pick them up inside
   // the rAF loop without restarting it.
   const opacityPeakRef = useRef(opacityPeak);
   const intensityRef = useRef(intensity);
   const onArriveRef = useRef(onNodeArrive);
+  const nodeAccentByIdRef = useRef(nodeAccentById);
   opacityPeakRef.current = opacityPeak;
   intensityRef.current = intensity;
   onArriveRef.current = onNodeArrive;
+  nodeAccentByIdRef.current = nodeAccentById;
 
   useEffect(() => {
     let frame = 0;
     let mounted = true;
     let lastArrivalKey = "";
+    timingRef.current = null;
 
     const draw = (time: number) => {
       if (!mounted) {
         return;
       }
 
-      if (segments.length === 0) {
+      if (segments.length === 0 || routes.length === 0) {
         return;
       }
 
       const peakOpacity = opacityPeakRef.current;
       const waveIntensity = intensityRef.current;
       const elapsedSeconds = Math.max(0, time / 1000 - flow.delay);
-      const totalDuration = segmentDuration * segments.length;
-      // ─── Ping-pong route progression ─────────────────────────────────────
-      // The wave travels forward through every segment, then *bounces back*
-      // along the same route (in reverse) when it hits the terminal node.
-      // This is what makes a route with no "next" project feel alive
-      // instead of teleporting back to the start.
-      const cycleDuration = 2 * totalDuration;
+      const positions = livePositionsRef.current;
+      let timing = timingRef.current;
+
+      if (!timing || time - timing.updatedAt > 250) {
+        const segmentDurations = segments.map((segment) => {
+          const start = positions.get(segment.startId);
+          const end = positions.get(segment.endId);
+
+          return start && end
+            ? waveSegmentDurationFor(start, end, reduced)
+            : segmentDuration;
+        });
+        const slotDurations = segmentDurations.map(
+          (duration) => duration + nodeHoldDuration,
+        );
+        const routeDurations = routes.map((route, routeIndex) => {
+          const routeStart = routeStartByIndex[routeIndex] ?? 0;
+
+          return route.reduce(
+            (sum, _segment, segmentIndex) =>
+              sum + (slotDurations[routeStart + segmentIndex] ?? segmentDuration),
+            0,
+          );
+        });
+        const traversalDuration = Math.max(
+          0.01,
+          routeDurations.reduce((sum, duration) => sum + duration, 0),
+        );
+
+        timing = {
+          segmentDurations,
+          slotDurations,
+          routeDurations,
+          traversalDuration,
+          updatedAt: time,
+        };
+        timingRef.current = timing;
+      }
+
+      const {
+        segmentDurations,
+        slotDurations,
+        routeDurations,
+        traversalDuration,
+      } = timing;
+      // ─── Route progression ───────────────────────────────────────────────
+      // The wave travels one relation, dwells on the reached badge for the
+      // ping duration, then moves to the next explicit route segment. The route
+      // builder already inserts real backtrack segments only at dead ends, so
+      // the renderer should not globally reverse the whole path.
+      const cycleDuration = traversalDuration;
       const cycleNumber = Math.floor(elapsedSeconds / cycleDuration);
       const cyclePos = elapsedSeconds - cycleNumber * cycleDuration;
-      const goingForward = cyclePos < totalDuration;
-      const rawProgress = goingForward
-        ? cyclePos
-        : cycleDuration - cyclePos;
-      // Gentle pendulum-style ease across the whole traversal: slope is 0 at
-      // both endpoints (the bounce points) and peaks at 1.5× linear speed in
-      // the middle. The integral is preserved, so the wave still completes a
-      // full traversal in `totalDuration` — it never feels *slower* — but
-      // the velocity reversal at the terminal is no longer instantaneous,
-      // which kills the last bit of perceived stutter at bounces.
-      const linearT = clamp01(rawProgress / totalDuration);
-      const easedT = WAVE_BOUNCE_EASE > 0
-        ? linearT * linearT * (3 - 2 * linearT) * WAVE_BOUNCE_EASE +
-          linearT * (1 - WAVE_BOUNCE_EASE)
-        : linearT;
-      const routeProgress = easedT * totalDuration;
-      const routeUnits = clamp(
-        routeProgress / segmentDuration,
-        0,
-        segments.length,
-      );
-      const activeIndex = Math.min(
-        Math.floor(routeUnits),
-        segments.length - 1,
-      );
-      const localProgress = routeUnits - activeIndex;
+      const traversalPos = cyclePos;
+      let routeIndex = 0;
+      let routePos = traversalPos;
 
-      const positions = livePositionsRef.current;
+      for (let index = 0; index < routes.length; index++) {
+        const duration = routeDurations[index] ?? segmentDuration;
+        if (routePos < duration || index === routes.length - 1) {
+          routeIndex = index;
+          break;
+        }
+        routePos -= duration;
+      }
 
-      // Direction-aware arrival bloom: when going forward, fire as the wave
-      // approaches the segment's *end* node; when going backward, fire as
-      // it approaches the segment's *start* node. The arrivalKey encodes
-      // cycle + segment + direction so a bounce in/out of a terminal node
-      // still triggers a fresh fill on each pass instead of silently
-      // skipping it.
-      const arrivalThreshold = goingForward
-        ? localProgress > 0.78
-        : localProgress < 0.22;
+      const activeRoute = routes[routeIndex];
+      const routeStartIndex = routeStartByIndex[routeIndex] ?? 0;
+      let slotIndex = activeRoute.length - 1;
+      let slotElapsed = routePos;
+
+      for (let index = 0; index < activeRoute.length; index++) {
+        const duration = slotDurations[routeStartIndex + index] ?? segmentDuration;
+
+        if (slotElapsed < duration || index === activeRoute.length - 1) {
+          slotIndex = index;
+          break;
+        }
+
+        slotElapsed -= duration;
+      }
+
+      const activeIndex = routeStartIndex + slotIndex;
+      const activeSegmentDuration = segmentDurations[activeIndex] ?? segmentDuration;
+      const isNodeHold = slotElapsed >= activeSegmentDuration;
+      const linearLocalT = clamp01(slotElapsed / activeSegmentDuration);
+      const easedLocalT = WAVE_BOUNCE_EASE > 0
+        ? smoothstep(linearLocalT) * WAVE_BOUNCE_EASE +
+          linearLocalT * (1 - WAVE_BOUNCE_EASE)
+        : linearLocalT;
+      const localProgress = isNodeHold ? 1 : easedLocalT;
+
+      // Arrival ping fires at the explicit segment destination. Backtracking
+      // segments are stored with reversed start/end ids, so they naturally ping
+      // the node the wave really returns to.
+      const arrivalThreshold = isNodeHold;
       const arrivalSegment = segments[activeIndex];
-      const arrivalNodeId = goingForward
-        ? arrivalSegment.endId
-        : arrivalSegment.startId;
-      const arrivalKey = `${cycleNumber}-${activeIndex}-${goingForward ? "f" : "b"}`;
+      const arrivalNodeId = arrivalSegment.endId;
+      const arrivalKey = `${cycleNumber}-${activeIndex}`;
       if (arrivalThreshold && arrivalKey !== lastArrivalKey) {
         lastArrivalKey = arrivalKey;
         onArriveRef.current({
           nodeId: arrivalNodeId,
-          color: arrivalSegment.edge.color,
+          color: nodeAccentByIdRef.current.get(arrivalNodeId) ?? arrivalSegment.edge.color,
         });
       }
-      const overlap = WAVE_HANDOFF_OVERLAP;
 
-      for (let i = 0; i < segments.length; i++) {
-        const seg = segments[i];
-        const slice = sliceRefs.current[i];
-        if (!slice) {
-          continue;
+      const seg = segments[activeIndex];
+      const refs = flowRefs.current;
+      const startNode = positions.get(seg.startId);
+      const endNode = positions.get(seg.endId);
+
+      if (!startNode || !endNode) {
+        for (const stop of refs.stops) {
+          setSvgAttr(stop, "stop-opacity", 0);
         }
+        setSvgAttr(refs.tube, "opacity", 0);
+        setSvgAttr(refs.channel, "opacity", 0);
+        frame = window.requestAnimationFrame(draw);
+        return;
+      }
 
-        const startNode = positions.get(seg.startId);
-        const endNode = positions.get(seg.endId);
-        if (!startNode || !endNode) {
-          continue;
+      const endpoints = getEdgeEndpoints(startNode, endNode);
+
+      // Update the single active wave line in place so dragging a node carries
+      // the visible pressure wave without re-rendering hidden route segments.
+      setLineEndpoints(refs.tube, endpoints);
+      setLineEndpoints(refs.channel, endpoints);
+      setSvgAttr(refs.gradient, "x1", endpoints.x1);
+      setSvgAttr(refs.gradient, "y1", endpoints.y1);
+      setSvgAttr(refs.gradient, "x2", endpoints.x2);
+      setSvgAttr(refs.gradient, "y2", endpoints.y2);
+
+      const center = localProgress;
+      const visible = center >= 0 && center <= 1;
+
+      if (!visible) {
+        for (const stop of refs.stops) {
+          setSvgAttr(stop, "stop-opacity", 0);
         }
-
-        const endpoints = getEdgeEndpoints(startNode, endNode);
-
-        // Update segment-line endpoints live so dragging a node carries the
-        // wave with it.
-        setLineEndpoints(slice.tube, endpoints);
-        setLineEndpoints(slice.channel, endpoints);
-        setSvgAttr(slice.gradient, "x1", endpoints.x1);
-        setSvgAttr(slice.gradient, "y1", endpoints.y1);
-        setSvgAttr(slice.gradient, "x2", endpoints.x2);
-        setSvgAttr(slice.gradient, "y2", endpoints.y2);
-
-        // Compute this segment's relative position to the wave head. Wave
-        // moves at constant velocity along the route in ping-pong fashion,
-        // so we no longer need any wrap-around — the wave can never appear
-        // at segment 0 while it's near segment N-1 (the bounce-back keeps
-        // it on the same continuous path).
-        // `center` is the wave's position expressed in this segment's
-        // [0..1] space. Negative means "wave is approaching from before
-        // segment start", >1 means "wave has already passed segment end".
-        const center = activeIndex - i + localProgress;
-
-        // Decide if this segment should render anything. Anything within the
-        // overlap window on either side gets a fading wave for seamless
-        // handoff at junction nodes.
-        const visible =
-          center > -overlap - WAVE_SOFT_SPREAD &&
-          center < 1 + overlap + WAVE_SOFT_SPREAD;
-
-        if (!visible) {
-          // Dormant — clear all stops and hide the line.
-          for (const stop of slice.stops) {
-            setSvgAttr(stop, "stop-opacity", 0);
-          }
-          setSvgAttr(slice.tube, "opacity", 0);
-          setSvgAttr(slice.channel, "opacity", 0);
-          continue;
-        }
-
-        // Boundary envelope — full intensity in the segment's body, smoothly
-        // ramping to 0 across the overlap region. This is what makes the
-        // wave "leak" naturally between adjacent segments at shared nodes.
-        let envelope = 1;
-        if (center < 0) {
-          envelope = smoothstep(1 + center / overlap);
-        } else if (center > 1) {
-          envelope = smoothstep(1 - (center - 1) / overlap);
-        }
-
-        const peak = peakOpacity * WAVE_PEAK_OPACITY * waveIntensity * envelope;
-        const tubeOpacity =
-          peakOpacity * (0.3 + 0.42 * envelope) * waveIntensity;
-        const tubeWidth =
-          WAVE_STROKE_BASE +
-          (WAVE_STROKE_PEAK - WAVE_STROKE_BASE) * envelope;
-        const color = seg.edge.color;
-
-        setSvgAttr(slice.tube, "opacity", tubeOpacity);
-        setSvgAttr(slice.tube, "stroke-width", tubeWidth);
-        setSvgAttr(
-          slice.channel,
-          "opacity",
-          peakOpacity * WAVE_CHANNEL_OPACITY * envelope,
+        setSvgAttr(refs.tube, "opacity", 0);
+        setSvgAttr(refs.channel, "opacity", 0);
+      } else {
+        const distanceFromDeparture = localProgress;
+        const distanceToArrival = 1 - localProgress;
+        const departureFade = smoothstep(
+          distanceFromDeparture / WAVE_NODE_ABSORB_DISTANCE,
         );
-        setSvgAttr(slice.channel, "stroke", color);
+        const arrivalFade = smoothstep(distanceToArrival / WAVE_NODE_ABSORB_DISTANCE);
+        const activeEndpointFade = isNodeHold ? 0 : departureFade * arrivalFade;
+        const midpointTaper = Math.sin(Math.PI * clamp01(localProgress));
+        const sizeEnvelope =
+          Math.pow(activeEndpointFade, 0.68) *
+          Math.pow(Math.max(0, midpointTaper), 1.05);
+        const taperedSize =
+          WAVE_STROKE_TAPER_MIN +
+          (1 - WAVE_STROKE_TAPER_MIN) * sizeEnvelope;
+        const visibleLineLength = Math.max(
+          1,
+          distanceBetween(startNode, endNode) - LINE_GAP * 2,
+        );
+        const shortLineStrokeScale = clamp(
+          visibleLineLength / 130,
+          WAVE_SHORT_SEGMENT_STROKE_SCALE,
+          1,
+        );
+        const baseColor = seg.edge.color;
+        const sourceColor = nodeAccentByIdRef.current.get(seg.startId) ?? baseColor;
+        const targetColor = nodeAccentByIdRef.current.get(seg.endId) ?? baseColor;
+        const departureColorBlend =
+          (1 - smoothstep(distanceFromDeparture / WAVE_COLOR_BLEND_DISTANCE)) *
+          WAVE_COLOR_BLEND_STRENGTH;
+        const arrivalColorBlend =
+          smoothstep(
+            (WAVE_COLOR_BLEND_DISTANCE - distanceToArrival) /
+              WAVE_COLOR_BLEND_DISTANCE,
+          ) * WAVE_COLOR_BLEND_STRENGTH;
+        const releaseColor = mixColors(baseColor, sourceColor, departureColorBlend);
+        const color = mixColors(releaseColor, targetColor, arrivalColorBlend);
+        const peak =
+          peakOpacity * WAVE_PEAK_OPACITY * waveIntensity * activeEndpointFade;
+        const tubeOpacity =
+          peakOpacity * 0.72 * waveIntensity * activeEndpointFade;
+        const tubeWidth = WAVE_STROKE_PEAK * shortLineStrokeScale * taperedSize;
+        const channelWidth =
+          WAVE_CHANNEL_STROKE_BASE +
+          (WAVE_CHANNEL_STROKE_PEAK - WAVE_CHANNEL_STROKE_BASE) *
+            shortLineStrokeScale *
+            taperedSize;
 
-        // Sample the bell-curve wave profile at each fixed gradient stop.
+        setSvgAttr(refs.tube, "opacity", tubeOpacity);
+        setSvgAttr(refs.tube, "stroke-width", tubeWidth);
+        setSvgAttr(refs.channel, "stroke-width", channelWidth);
+        setSvgAttr(
+          refs.channel,
+          "opacity",
+          peakOpacity * WAVE_CHANNEL_OPACITY * activeEndpointFade,
+        );
+        setSvgAttr(refs.channel, "stroke", color);
+
         for (let s = 0; s < STOP_OFFSETS.length; s++) {
           const offset = STOP_OFFSETS[s];
-          const profile = waveProfile(
-            offset,
-            center,
-            WAVE_SPREAD,
-            WAVE_SOFT_SPREAD,
-          );
-          setStop(slice.stops[s], offset, peak * profile, color);
+          const profile = waveProfile(offset, center, visibleLineLength);
+          setStop(refs.stops[s], offset, peak * profile, color);
         }
       }
 
@@ -2622,7 +3010,16 @@ function GraphTubeFlow({
       mounted = false;
       window.cancelAnimationFrame(frame);
     };
-  }, [flow.delay, livePositionsRef, segmentDuration, segments]);
+  }, [
+    flow.delay,
+    livePositionsRef,
+    nodeHoldDuration,
+    reduced,
+    routeStartByIndex,
+    routes,
+    segmentDuration,
+    segments,
+  ]);
 
   if (segments.length === 0) {
     return null;
@@ -2635,172 +3032,153 @@ function GraphTubeFlow({
       style={{ mixBlendMode: "screen" }}
     >
       <defs>
-        {segments.map((seg, i) => (
-          <linearGradient
-            key={`${seg.startId}-${seg.endId}-grad-${i}`}
-            id={`${gradientPrefix}-${i}`}
-            ref={(el) => {
-              const slice = sliceRefs.current[i];
-              if (slice) slice.gradient = el;
-            }}
-            gradientUnits="userSpaceOnUse"
-          >
-            {STOP_OFFSETS.map((offset, s) => (
-              <stop
-                key={s}
-                ref={(el) => {
-                  const slice = sliceRefs.current[i];
-                  if (slice) slice.stops[s] = el;
-                }}
-                offset={`${offset * 100}%`}
-                stopColor={seg.edge.color}
-                stopOpacity="0"
-              />
-            ))}
-          </linearGradient>
-        ))}
+        <linearGradient
+          id={gradientId}
+          ref={(el) => {
+            flowRefs.current.gradient = el;
+          }}
+          gradientUnits="userSpaceOnUse"
+        >
+          {STOP_OFFSETS.map((offset, s) => (
+            <stop
+              key={s}
+              ref={(el) => {
+                flowRefs.current.stops[s] = el;
+              }}
+              offset={`${offset * 100}%`}
+              stopColor={segments[0]?.edge.color ?? "#7dd3fc"}
+              stopOpacity="0"
+            />
+          ))}
+        </linearGradient>
       </defs>
-      {segments.map((seg, i) => (
-        <g key={`${seg.startId}-${seg.endId}-${i}`}>
-          <line
-            ref={(el) => {
-              const slice = sliceRefs.current[i];
-              if (slice) slice.channel = el;
-            }}
-            stroke={seg.edge.color}
-            strokeWidth={3.2}
-            strokeLinecap="round"
-            opacity={0}
-            filter="url(#project-signal-glow)"
-          />
-          <line
-            ref={(el) => {
-              const slice = sliceRefs.current[i];
-              if (slice) slice.tube = el;
-            }}
-            stroke={`url(#${gradientPrefix}-${i})`}
-            strokeWidth={WAVE_STROKE_BASE}
-            strokeLinecap="round"
-            opacity={0}
-            filter="url(#project-signal-glow)"
-          />
-        </g>
-      ))}
+      <line
+        ref={(el) => {
+          flowRefs.current.channel = el;
+        }}
+        stroke={segments[0]?.edge.color ?? "#7dd3fc"}
+        strokeWidth={3.2}
+        strokeLinecap="round"
+        opacity={0}
+        filter="url(#project-signal-glow)"
+      />
+      <line
+        ref={(el) => {
+          flowRefs.current.tube = el;
+        }}
+        stroke={`url(#${gradientId})`}
+        strokeWidth={WAVE_STROKE_BASE}
+        strokeLinecap="round"
+        opacity={0}
+        filter="url(#project-signal-glow)"
+      />
     </g>
   );
 }
 
-function BadgeBloom({
+function BadgePing({
   color,
   clipPathId,
-  gradientId,
   shouldReduceMotion,
 }: {
   color: string;
   clipPathId: string;
-  gradientId: string;
   shouldReduceMotion: boolean | null;
 }) {
-  const faceRef = useRef<SVGCircleElement | null>(null);
-  const fillRef = useRef<SVGCircleElement | null>(null);
-  const coreRef = useRef<SVGCircleElement | null>(null);
-
-  useEffect(() => {
-    const face = faceRef.current;
-    const fill = fillRef.current;
-    const core = coreRef.current;
-
-    if (!face || !fill || !core) {
-      return;
-    }
-
-    const setNumber = (
-      element: SVGElement,
-      name: string,
-      value: number,
-      precision = 4,
-    ) => {
-      element.setAttribute(name, value.toFixed(precision));
-    };
-
-    const applyBloom = (progress: number) => {
-      const holdStart = BADGE_BLOOM_RAMP_PORTION;
-      const fadeStart = BADGE_BLOOM_RAMP_PORTION + BADGE_BLOOM_HOLD_PORTION;
-      let brightness = 1;
-
-      if (progress < holdStart) {
-        const ramp = smoothstep(progress / holdStart);
-        brightness = Math.pow(ramp, 3.1);
-      } else if (progress > fadeStart) {
-        brightness = 1 - smoothstep((progress - fadeStart) / (1 - fadeStart));
-      }
-
-      const growth = Math.pow(smoothstep(Math.min(progress / 0.78, 1)), 1.25);
-      const fillRadius = NODE_RADIUS * (0.03 + 1.82 * growth);
-      const coreRadius = NODE_RADIUS * (0.08 + 0.82 * Math.pow(brightness, 0.75));
-
-      setNumber(face, "opacity", BADGE_BLOOM_FACE_OPACITY * Math.pow(brightness, 1.2));
-      setNumber(fill, "opacity", BADGE_BLOOM_PEAK_OPACITY * brightness);
-      setNumber(fill, "r", fillRadius, 2);
-      setNumber(core, "opacity", BADGE_BLOOM_CORE_OPACITY * Math.pow(brightness, 1.35));
-      setNumber(core, "r", coreRadius, 2);
-    };
-
-    if (shouldReduceMotion) {
-      applyBloom(0.74);
-      return;
-    }
-
-    let frame = 0;
-    const startedAt = window.performance.now();
-    const durationMs = BADGE_BLOOM_DURATION * 1000;
-
-    const draw = (time: number) => {
-      const progress = clamp01((time - startedAt) / durationMs);
-      applyBloom(progress);
-
-      if (progress < 1) {
-        frame = window.requestAnimationFrame(draw);
-      } else {
-        setNumber(face, "opacity", 0);
-        setNumber(fill, "opacity", 0);
-        setNumber(core, "opacity", 0);
-      }
-    };
-
-    frame = window.requestAnimationFrame(draw);
-
-    return () => {
-      window.cancelAnimationFrame(frame);
-    };
-  }, [shouldReduceMotion]);
-
   return (
     <g clipPath={`url(#${clipPathId})`} pointerEvents="none" aria-hidden="true">
-      <circle
-        ref={faceRef}
+      <motion.circle
         cx={0}
         cy={0}
         r={NODE_RADIUS}
         fill={color}
-        opacity={0}
+        initial={{ opacity: 0 }}
+        animate={
+          shouldReduceMotion
+            ? { opacity: BADGE_PING_FACE_OPACITY * 0.5 }
+            : {
+                opacity: [
+                  0,
+                  BADGE_PING_FACE_OPACITY * 0.03,
+                  BADGE_PING_FACE_OPACITY * 0.14,
+                  BADGE_PING_FACE_OPACITY * 0.42,
+                  BADGE_PING_FACE_OPACITY,
+                  BADGE_PING_FACE_OPACITY * 0.68,
+                  BADGE_PING_FACE_OPACITY * 0.22,
+                  0,
+                ],
+              }
+        }
+        transition={{
+          duration: shouldReduceMotion
+            ? BADGE_PING_DURATION_REDUCED
+            : BADGE_PING_DURATION,
+          times: shouldReduceMotion ? undefined : BADGE_PING_TIMES,
+          ease: BLOOM_EASE_SLOW_IN_OUT,
+        }}
       />
-      <circle
-        ref={fillRef}
+      <motion.circle
         cx={0}
         cy={0}
-        r={NODE_RADIUS * 0.03}
-        fill={`url(#${gradientId})`}
-        opacity={0}
-      />
-      <circle
-        ref={coreRef}
-        cx={0}
-        cy={0}
-        r={NODE_RADIUS * 0.08}
+        r={NODE_RADIUS * 0.94}
         fill={color}
-        filter="url(#project-node-inner-bloom)"
-        opacity={0}
+        filter="url(#project-node-inner-ping)"
+        initial={{ opacity: 0 }}
+        animate={
+          shouldReduceMotion
+            ? { opacity: BADGE_PING_CORE_OPACITY }
+            : {
+                opacity: [
+                  0,
+                  BADGE_PING_CORE_OPACITY * 0.02,
+                  BADGE_PING_CORE_OPACITY * 0.12,
+                  BADGE_PING_CORE_OPACITY * 0.36,
+                  BADGE_PING_CORE_OPACITY,
+                  BADGE_PING_CORE_OPACITY * 0.5,
+                  BADGE_PING_CORE_OPACITY * 0.16,
+                  0,
+                ],
+              }
+        }
+        transition={{
+          duration: shouldReduceMotion
+            ? BADGE_PING_DURATION_REDUCED
+            : BADGE_PING_DURATION,
+          times: shouldReduceMotion ? undefined : BADGE_PING_TIMES,
+          ease: BLOOM_EASE_SLOW_IN_OUT,
+        }}
+      />
+      <motion.circle
+        cx={0}
+        cy={0}
+        r={NODE_RADIUS - 1.2}
+        fill="none"
+        stroke={color}
+        initial={{ opacity: 0, strokeWidth: 1 }}
+        animate={
+          shouldReduceMotion
+            ? { opacity: BADGE_PING_STROKE_OPACITY * 0.6, strokeWidth: 1.8 }
+            : {
+                opacity: [
+                  0,
+                  BADGE_PING_STROKE_OPACITY * 0.04,
+                  BADGE_PING_STROKE_OPACITY * 0.18,
+                  BADGE_PING_STROKE_OPACITY * 0.52,
+                  BADGE_PING_STROKE_OPACITY,
+                  BADGE_PING_STROKE_OPACITY * 0.62,
+                  BADGE_PING_STROKE_OPACITY * 0.18,
+                  0,
+                ],
+                strokeWidth: [1, 1.08, 1.35, 2.05, 2.45, 2.05, 1.35, 1],
+              }
+        }
+        transition={{
+          duration: shouldReduceMotion
+            ? BADGE_PING_DURATION_REDUCED
+            : BADGE_PING_DURATION,
+          times: shouldReduceMotion ? undefined : BADGE_PING_TIMES,
+          ease: BLOOM_EASE_SLOW_IN_OUT,
+        }}
       />
     </g>
   );

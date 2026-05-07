@@ -1,5 +1,8 @@
 import { useEffect, useRef } from "react";
 
+const MAX_CANVAS_DPR = 1.5;
+const BACKGROUND_FRAME_MS = 1000 / 30;
+
 /**
  * Animated background — a drifting starfield with a soft nebula wash.
  *
@@ -25,7 +28,7 @@ export function AnimatedBackground() {
     let reduceMotion = reduceMotionQuery.matches;
     const motionScale = () => (reduceMotion ? 0.5 : 1);
 
-    let dpr = Math.min(window.devicePixelRatio || 1, 2);
+    let dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
     let width = window.innerWidth;
     let height = window.innerHeight;
 
@@ -77,7 +80,7 @@ export function AnimatedBackground() {
     ];
 
     const resize = () => {
-      dpr = Math.min(window.devicePixelRatio || 1, 2);
+      dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DPR);
       width = window.innerWidth;
       height = window.innerHeight;
       canvas.width = Math.floor(width * dpr);
@@ -90,10 +93,17 @@ export function AnimatedBackground() {
 
     let frameId = 0;
     let last = performance.now();
+    let lastDraw = 0;
 
     const draw = (now: number) => {
+      if (now - lastDraw < BACKGROUND_FRAME_MS) {
+        frameId = requestAnimationFrame(draw);
+        return;
+      }
+
       const dt = Math.min((now - last) / 16.6667, 2); // delta in 60fps frames, clamp
       last = now;
+      lastDraw = now;
 
       // Leave a faint trail so the drift reads more clearly at idle.
       ctx.fillStyle = "rgba(8, 9, 12, 0.95)";
@@ -168,6 +178,7 @@ export function AnimatedBackground() {
     const onVisibility = () => {
       if (!document.hidden) {
         last = performance.now();
+        lastDraw = 0;
         frameId = requestAnimationFrame(draw);
       } else {
         cancelAnimationFrame(frameId);
