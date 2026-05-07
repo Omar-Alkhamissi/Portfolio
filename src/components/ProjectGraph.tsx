@@ -148,11 +148,11 @@ const WAVE_MIN_SEGMENT_DURATION = 0.92;
 const WAVE_MAX_SEGMENT_DURATION = 2.55;
 // Asymmetric liquid profile in viewBox units. Pixel-based lengths keep short
 // relations from collapsing into blocky square pulses.
-const WAVE_CORE_LENGTH = 3.2;
-const WAVE_FRONT_LENGTH = 18;
-const WAVE_TAIL_LENGTH = 34;
-const WAVE_WAKE_LENGTH = 50;
-const WAVE_WAKE_OPACITY = 0.09;
+const WAVE_CORE_LENGTH = 2.8;
+const WAVE_FRONT_LENGTH = 22;
+const WAVE_TAIL_LENGTH = 42;
+const WAVE_WAKE_LENGTH = 64;
+const WAVE_WAKE_OPACITY = 0.055;
 const WAVE_COLOR_BLEND_DISTANCE = 0.2;
 const WAVE_COLOR_BLEND_STRENGTH = 0.74;
 // Fade the pulse as it enters/leaves a badge so the head never flashes on the
@@ -583,7 +583,7 @@ const PROJECT_POSITION_OVERRIDES: Record<string, LivePosition> = {
   "Travel Advisory Tracker": { x: 334, y: 202 },
   "Debug My Heart": { x: 289, y: 361 },
   "Fragrance E-Commerce": { x: 410, y: 86 },
-  "Wordle gRPC Microservices": { x: 512, y: 417 },
+  "Wordle gRPC Microservices": { x: 512, y: 391 },
   "Fast Food Ordering": { x: 743, y: 171 },
   "Employee Helpdesk Portal": { x: 989, y: 347 },
   "Enigma Machine Simulator": { x: 888, y: 134 },
@@ -3455,6 +3455,11 @@ function smoothstep(value: number) {
   return t * t * (3 - 2 * t);
 }
 
+function smootherstep(value: number) {
+  const t = clamp01(value);
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
 // Liquid profile: compact rounded head, softer tail, and a faint residual wake.
 // The asymmetry makes the pulse feel like pressure moving through a vein rather
 // than a symmetric laser dot.
@@ -3478,21 +3483,21 @@ function waveProfile(
     const t =
       (dist - WAVE_CORE_LENGTH) /
       Math.max(WAVE_FRONT_LENGTH - WAVE_CORE_LENGTH, 1e-4);
-    return (1 + Math.cos(Math.PI * t)) * 0.5;
+    return 1 - smootherstep(t);
   }
 
   if (dist < WAVE_TAIL_LENGTH) {
     const t =
       (dist - WAVE_CORE_LENGTH) /
       Math.max(WAVE_TAIL_LENGTH - WAVE_CORE_LENGTH, 1e-4);
-    return (1 + Math.cos(Math.PI * t)) * 0.5;
+    return WAVE_WAKE_OPACITY + (1 - WAVE_WAKE_OPACITY) * (1 - smootherstep(t));
   }
 
   if (dist < WAVE_WAKE_LENGTH) {
     const t =
       (dist - WAVE_TAIL_LENGTH) /
       Math.max(WAVE_WAKE_LENGTH - WAVE_TAIL_LENGTH, 1e-4);
-    return WAVE_WAKE_OPACITY * (1 - smoothstep(t));
+    return WAVE_WAKE_OPACITY * (1 - smootherstep(t));
   }
 
   return 0;
@@ -3528,7 +3533,7 @@ type TubeFlowTiming = {
 // Fixed offsets used for the gradient stops. Long relation lines need a denser
 // grid so the compact wave never falls between samples and appears to flicker.
 // Attribute caching below keeps the extra stops from rewriting unchanged values.
-const STOP_OFFSETS = Array.from({ length: 41 }, (_, index) => index / 40);
+const STOP_OFFSETS = Array.from({ length: 51 }, (_, index) => index / 50);
 
 function GraphTubeFlow({
   flow,
@@ -3767,10 +3772,12 @@ function GraphTubeFlow({
       } else {
         const distanceFromDeparture = localProgress;
         const distanceToArrival = 1 - localProgress;
-        const departureFade = smoothstep(
+        const departureFade = smootherstep(
           distanceFromDeparture / WAVE_NODE_ABSORB_DISTANCE,
         );
-        const arrivalFade = smoothstep(distanceToArrival / WAVE_NODE_ABSORB_DISTANCE);
+        const arrivalFade = smootherstep(
+          distanceToArrival / WAVE_NODE_ABSORB_DISTANCE,
+        );
         const activeEndpointFade = isNodeHold ? 0 : departureFade * arrivalFade;
         const midpointTaper = Math.sin(Math.PI * clamp01(localProgress));
         const sizeEnvelope =
@@ -3792,10 +3799,10 @@ function GraphTubeFlow({
         const sourceColor = nodeAccentByIdRef.current.get(seg.startId) ?? baseColor;
         const targetColor = nodeAccentByIdRef.current.get(seg.endId) ?? baseColor;
         const departureColorBlend =
-          (1 - smoothstep(distanceFromDeparture / WAVE_COLOR_BLEND_DISTANCE)) *
+          (1 - smootherstep(distanceFromDeparture / WAVE_COLOR_BLEND_DISTANCE)) *
           WAVE_COLOR_BLEND_STRENGTH;
         const arrivalColorBlend =
-          smoothstep(
+          smootherstep(
             (WAVE_COLOR_BLEND_DISTANCE - distanceToArrival) /
               WAVE_COLOR_BLEND_DISTANCE,
           ) * WAVE_COLOR_BLEND_STRENGTH;
