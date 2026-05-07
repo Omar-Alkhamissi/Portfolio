@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { motion, useReducedMotion } from "framer-motion";
+import { motion, useInView, useReducedMotion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
 import {
   Atom,
@@ -35,7 +35,6 @@ import {
   Zap,
 } from "lucide-react";
 import { skillGroups, type SkillGroup } from "../data/skills";
-import { site } from "../data/site";
 import {
   useAdaptivePerformanceProfile,
   usePerformanceDiagnosticFlags,
@@ -125,12 +124,11 @@ const SKILL_ICONS: Record<string, LucideIcon> = {
   "N-tier": Workflow,
   Repository: Boxes,
   Async: TimerReset,
-  RPN: Route,
-  "Recursive Parsing": Route,
-  "Priority Queues": Route,
-  "Decision Trees": Blocks,
-  "Benford Analysis": Binary,
-  "Calendar Conversion": TimerReset,
+  "Algorithm Design": Binary,
+  "Data Structures": Blocks,
+  Parsing: Route,
+  Recursion: GitBranch,
+  "Statistical Analysis": Binary,
 };
 
 type PlanetPosition = {
@@ -194,13 +192,52 @@ function planetPositionAt(position: PlanetPosition, orbitTime: number) {
 export function SolarSystem() {
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [systemEntered, setSystemEntered] = useState(false);
+  const [scrollArmed, setScrollArmed] = useState(false);
+  const systemRef = useRef<HTMLDivElement | null>(null);
   const planetRefs = useRef<Map<string, SVGGElement>>(new Map());
   const labelRefs = useRef<Map<string, SVGTextElement>>(new Map());
+  const systemInView = useInView(systemRef, {
+    amount: 0.28,
+    margin: "-8% 0px -12% 0px",
+  });
   const shouldReduceMotion = useReducedMotion();
   const performanceProfile = useAdaptivePerformanceProfile();
   const diagnostics = usePerformanceDiagnosticFlags();
   const orbitMotionReduced = Boolean(shouldReduceMotion || diagnostics.staticMode);
   const positions = useMemo(() => buildPositions(skillGroups), []);
+
+  useEffect(() => {
+    if (scrollArmed) {
+      return;
+    }
+
+    const armSolarEntry = () => setScrollArmed(true);
+
+    window.addEventListener("scroll", armSolarEntry, {
+      once: true,
+      passive: true,
+    });
+    window.addEventListener("wheel", armSolarEntry, {
+      once: true,
+      passive: true,
+    });
+    window.addEventListener("touchmove", armSolarEntry, {
+      once: true,
+      passive: true,
+    });
+
+    return () => {
+      window.removeEventListener("scroll", armSolarEntry);
+      window.removeEventListener("wheel", armSolarEntry);
+      window.removeEventListener("touchmove", armSolarEntry);
+    };
+  }, [scrollArmed]);
+
+  useEffect(() => {
+    if (!systemEntered && scrollArmed && systemInView) {
+      setSystemEntered(true);
+    }
+  }, [scrollArmed, systemEntered, systemInView]);
 
   useEffect(() => {
     if (!systemEntered || diagnostics.staticMode) {
@@ -268,11 +305,11 @@ export function SolarSystem() {
 
   return (
     <motion.div
+      ref={systemRef}
       initial={{ opacity: 0, y: 12 }}
       whileInView={{ opacity: 1, y: 0 }}
       viewport={{ once: true, margin: "-80px" }}
       transition={{ duration: 0.5, ease: "easeOut" }}
-      onViewportEnter={() => setSystemEntered(true)}
       className="relative"
     >
       {/* Category filter chips above the system */}
@@ -496,7 +533,7 @@ export function SolarSystem() {
             );
           })}
 
-          {/* Core star — represents "Me" */}
+          {/* Core star — represents the developer core */}
           <motion.g
             initial={{ opacity: 0, scale: 0.65 }}
             animate={{
@@ -528,16 +565,15 @@ export function SolarSystem() {
               stroke="rgba(125,211,252,0.6)"
               strokeWidth={1.5}
             />
-            <text
-              x={CENTER}
-              y={CENTER + 5}
-              textAnchor="middle"
-              className="fill-accent font-mono"
-              fontSize="20"
-              fontWeight="600"
-            >
-              {site.initials}
-            </text>
+            <SquareCode
+              x={CENTER - 14}
+              y={CENTER - 14}
+              width={28}
+              height={28}
+              color="#7dd3fc"
+              strokeWidth={1.8}
+              aria-hidden="true"
+            />
           </motion.g>
         </svg>
 

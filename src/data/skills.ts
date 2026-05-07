@@ -88,12 +88,11 @@ export const skillGroups: SkillGroup[] = [
     title: "Algorithms / DS",
     icon: Binary,
     items: [
-      "RPN",
-      "Recursive Parsing",
-      "Priority Queues",
-      "Decision Trees",
-      "Benford Analysis",
-      "Calendar Conversion",
+      "Algorithm Design",
+      "Data Structures",
+      "Parsing",
+      "Recursion",
+      "Statistical Analysis",
     ],
   },
 ];
