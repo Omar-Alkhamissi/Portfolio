@@ -387,8 +387,18 @@ export function SolarSystem() {
           {/* Orbit rings */}
           {skillGroups.map((g, i) => {
             const r = RING_BASE + i * RING_STEP;
+            const isFiltered = activeGroup !== null;
             const isActive = activeGroup === null || activeGroup === g.id;
             const accent = GROUP_ACCENTS[g.id] ?? "#7dd3fc";
+            const hazeOpacity = systemEntered
+              ? isActive
+                ? isFiltered || orbitMotionReduced
+                  ? 0.18
+                  : [0.13, 0.24, 0.15]
+                : isFiltered
+                  ? 0.025
+                  : 0.04
+              : 0;
             return (
               <g key={g.id}>
                 <motion.circle
@@ -397,13 +407,7 @@ export function SolarSystem() {
                   initial={{ r: 0, opacity: 0 }}
                   animate={{
                     r: systemEntered ? r : 0,
-                    opacity: systemEntered
-                      ? isActive
-                        ? orbitMotionReduced
-                          ? 0.18
-                          : [0.13, 0.24, 0.15]
-                        : 0.04
-                      : 0,
+                    opacity: hazeOpacity,
                   }}
                   transition={{
                     r: {
@@ -411,11 +415,16 @@ export function SolarSystem() {
                       delay: orbitMotionReduced ? 0 : i * 0.06,
                       ease: [0.22, 1, 0.36, 1],
                     },
-                    opacity: {
-                      duration: orbitMotionReduced ? 0.01 : 5.2 + i * 0.35,
-                      repeat: orbitMotionReduced ? 0 : Infinity,
-                      ease: "easeInOut",
-                    },
+                    opacity: isFiltered
+                      ? {
+                          duration: orbitMotionReduced ? 0.01 : 0.24,
+                          ease: "easeOut",
+                        }
+                      : {
+                          duration: orbitMotionReduced ? 0.01 : 5.2 + i * 0.35,
+                          repeat: orbitMotionReduced ? 0 : Infinity,
+                          ease: "easeInOut",
+                        },
                   }}
                   fill="none"
                   stroke={accent}
