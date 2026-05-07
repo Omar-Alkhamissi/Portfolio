@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 import type { LucideIcon } from "lucide-react";
 import {
-  AppWindow,
   Atom,
   BadgeCheck,
   Binary,
@@ -16,10 +15,8 @@ import {
   Flame,
   FlaskConical,
   GitBranch,
-  Github,
   Globe,
   LayoutGrid,
-  Monitor,
   Network,
   PanelsTopLeft,
   Puzzle,
@@ -39,6 +36,10 @@ import {
 } from "lucide-react";
 import { skillGroups, type SkillGroup } from "../data/skills";
 import { site } from "../data/site";
+import {
+  useAdaptivePerformanceProfile,
+  usePerformanceDiagnosticFlags,
+} from "../lib/performance";
 
 /**
  * Solar System view of skills.
@@ -55,8 +56,8 @@ const VIEWBOX = 1180;
 const CENTER = VIEWBOX / 2;
 
 // Per-ring radii — packed within viewBox, plenty of breathing room
-const RING_BASE = 164;
-const RING_STEP = 76;
+const RING_BASE = 118;
+const RING_STEP = 50;
 
 // Outer rings still move slower, but the cadence is fast enough to be visible.
 const periodFor = (i: number) => 18 + i * 8;
@@ -67,48 +68,69 @@ const GROUP_ACCENTS: Record<string, string> = {
   frontend: "#34d399",
   backend: "#60a5fa",
   databases: "#fbbf24",
-  engineering: "#a78bfa",
-  tools: "#f472b6",
+  mobile: "#fde047",
+  security: "#fb7185",
+  testing: "#22c55e",
+  architecture: "#a78bfa",
+  algorithms: "#f34b7d",
 };
 
 const SKILL_ICONS: Record<string, LucideIcon> = {
   "C#": Braces,
   "C++": Binary,
   Java: Coffee,
-  JavaScript: FileJson2,
-  TypeScript: SquareCode,
+  JS: FileJson2,
+  TS: SquareCode,
   SQL: Database,
   HTML: FileCode2,
   CSS: Wind,
   React: Atom,
   "Vue 3": PanelsTopLeft,
-  "React Native + Expo": Smartphone,
-  "Tailwind CSS": Wind,
-  "MUI (Material UI)": LayoutGrid,
+  Quasar: PanelsTopLeft,
+  MUI: LayoutGrid,
+  Tailwind: Wind,
   Vite: Zap,
-  "ASP.NET Core": Server,
-  "Node.js + Express": Network,
-  "Entity Framework Core": Boxes,
+  "ASP.NET": Server,
+  "Node/Express": Network,
   "REST APIs": Waypoints,
+  gRPC: Workflow,
+  Protobuf: Braces,
   "Socket.IO": Radio,
-  "gRPC + Protobuf": Workflow,
-  "JWT Authentication": ShieldCheck,
-  MongoDB: Database,
+  Swagger: BadgeCheck,
   "SQL Server": Table2,
+  PostgreSQL: Table2,
   SQLite: Database,
-  "Firebase Firestore": Flame,
-  "Database Design": Boxes,
-  Normalization: SplitSquareVertical,
-  "Object-Oriented Programming": Blocks,
-  "Data Structures & Algorithms": Route,
-  "Design Patterns": Puzzle,
-  "Concurrency & Async": TimerReset,
-  "Testing (Jest, xUnit)": FlaskConical,
-  "Git / GitHub": Github,
+  MongoDB: Database,
+  Mongoose: Boxes,
+  Firestore: Flame,
+  "EF Core": Boxes,
+  RN: Smartphone,
+  Expo: Smartphone,
+  Firebase: Flame,
+  "Android APK": Smartphone,
+  "Local-First": Database,
+  JWT: ShieldCheck,
+  bcrypt: ShieldCheck,
+  PBKDF2: ShieldCheck,
+  Stripe: BadgeCheck,
+  Jest: FlaskConical,
+  Supertest: FlaskConical,
+  xUnit: BadgeCheck,
+  "Google Test": FlaskConical,
   "GitHub Actions": GitBranch,
-  "Visual Studio": AppWindow,
-  "VS Code": Monitor,
-  "Swagger / OpenAPI": BadgeCheck,
+  OOP: Blocks,
+  "GoF Patterns": Puzzle,
+  MVC: SplitSquareVertical,
+  Observer: Radio,
+  "N-tier": Workflow,
+  Repository: Boxes,
+  Async: TimerReset,
+  RPN: Route,
+  "Recursive Parsing": Route,
+  "Priority Queues": Route,
+  "Decision Trees": Blocks,
+  "Benford Analysis": Binary,
+  "Calendar Conversion": TimerReset,
 };
 
 type PlanetPosition = {
@@ -145,32 +167,104 @@ function buildPositions(groups: SkillGroup[]): PlanetPosition[] {
   return out;
 }
 
+function planetKey(position: PlanetPosition) {
+  return `${position.group.id}::${position.skill}`;
+}
+
+function planetPositionAt(position: PlanetPosition, orbitTime: number) {
+  const direction = directionFor(position.groupIndex);
+  const orbitAngle =
+    startAngleFor(position.groupIndex) +
+    (position.skillIndex / position.total) * Math.PI * 2 +
+    direction * ((orbitTime / position.rotationPeriod) * Math.PI * 2);
+  const cx = CENTER + position.ringRadius * Math.cos(orbitAngle);
+  const cy = CENTER + position.ringRadius * Math.sin(orbitAngle);
+  const labelRadius = position.ringRadius + 36;
+  const labelX = CENTER + labelRadius * Math.cos(orbitAngle);
+  const labelY = CENTER + labelRadius * Math.sin(orbitAngle) + 4;
+
+  return {
+    cx,
+    cy,
+    labelOffsetX: labelX - cx,
+    labelOffsetY: labelY - cy,
+  };
+}
+
 export function SolarSystem() {
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [systemEntered, setSystemEntered] = useState(false);
-  const [orbitTime, setOrbitTime] = useState(0);
-  const orbitStartRef = useRef<number | null>(null);
+  const planetRefs = useRef<Map<string, SVGGElement>>(new Map());
+  const labelRefs = useRef<Map<string, SVGTextElement>>(new Map());
   const shouldReduceMotion = useReducedMotion();
+  const performanceProfile = useAdaptivePerformanceProfile();
+  const diagnostics = usePerformanceDiagnosticFlags();
+  const orbitMotionReduced = Boolean(shouldReduceMotion || diagnostics.staticMode);
   const positions = useMemo(() => buildPositions(skillGroups), []);
 
   useEffect(() => {
-    if (!systemEntered) {
+    if (!systemEntered || diagnostics.staticMode) {
       return;
     }
 
     let frame = 0;
+    let lastTick = 0;
+    let lastPaint = 0;
+    let orbitTime = 0;
+    const minFrameMs = 1000 / performanceProfile.skills.maxFps;
+    const paintThresholdMs = Math.max(0, minFrameMs - 1);
+
+    const updateOrbit = () => {
+      for (const position of positions) {
+        const key = planetKey(position);
+        const visual = planetRefs.current.get(key);
+        const label = labelRefs.current.get(key);
+
+        if (!visual && !label) {
+          continue;
+        }
+
+        const next = planetPositionAt(position, orbitTime);
+        visual?.setAttribute(
+          "transform",
+          `translate(${next.cx.toFixed(2)} ${next.cy.toFixed(2)})`,
+        );
+        label?.setAttribute("x", next.labelOffsetX.toFixed(2));
+        label?.setAttribute("y", next.labelOffsetY.toFixed(2));
+      }
+    };
 
     const tick = (now: number) => {
-      orbitStartRef.current ??= now;
-      const elapsed = (now - orbitStartRef.current) / 1000;
-      setOrbitTime(shouldReduceMotion ? elapsed * 0.25 : elapsed);
+      if (!lastTick) {
+        lastTick = now;
+        lastPaint = now;
+        updateOrbit();
+        frame = window.requestAnimationFrame(tick);
+        return;
+      }
+
+      const deltaSeconds = Math.min(Math.max((now - lastTick) / 1000, 0), 0.08);
+      lastTick = now;
+      orbitTime += deltaSeconds * (orbitMotionReduced ? 0.25 : 1);
+
+      if (now - lastPaint >= paintThresholdMs) {
+        lastPaint = now;
+        updateOrbit();
+      }
+
       frame = window.requestAnimationFrame(tick);
     };
 
     frame = window.requestAnimationFrame(tick);
 
     return () => window.cancelAnimationFrame(frame);
-  }, [shouldReduceMotion, systemEntered]);
+  }, [
+    performanceProfile.skills.maxFps,
+    diagnostics.staticMode,
+    orbitMotionReduced,
+    positions,
+    systemEntered,
+  ]);
 
   return (
     <motion.div
@@ -240,7 +334,7 @@ export function SolarSystem() {
               <feGaussianBlur stdDeviation="0.6" />
             </filter>
             <filter id="ring-haze" x="-40%" y="-40%" width="180%" height="180%">
-              <feGaussianBlur stdDeviation="10" />
+              <feGaussianBlur stdDeviation={performanceProfile.skills.ringHazeBlur} />
             </filter>
           </defs>
 
@@ -250,7 +344,7 @@ export function SolarSystem() {
             cy={CENTER}
             r={446}
             fill="url(#core-glow)"
-            opacity={0.35}
+            opacity={performanceProfile.skills.ambientGlowOpacity}
           />
 
           {/* Orbit rings */}
@@ -268,7 +362,7 @@ export function SolarSystem() {
                     r: systemEntered ? r : 0,
                     opacity: systemEntered
                       ? isActive
-                        ? shouldReduceMotion
+                        ? orbitMotionReduced
                           ? 0.18
                           : [0.13, 0.24, 0.15]
                         : 0.04
@@ -276,19 +370,19 @@ export function SolarSystem() {
                   }}
                   transition={{
                     r: {
-                      duration: shouldReduceMotion ? 0.01 : 0.9,
-                      delay: shouldReduceMotion ? 0 : i * 0.06,
+                      duration: orbitMotionReduced ? 0.01 : 0.9,
+                      delay: orbitMotionReduced ? 0 : i * 0.06,
                       ease: [0.22, 1, 0.36, 1],
                     },
                     opacity: {
-                      duration: shouldReduceMotion ? 0.01 : 5.2 + i * 0.35,
-                      repeat: shouldReduceMotion ? 0 : Infinity,
+                      duration: orbitMotionReduced ? 0.01 : 5.2 + i * 0.35,
+                      repeat: orbitMotionReduced ? 0 : Infinity,
                       ease: "easeInOut",
                     },
                   }}
                   fill="none"
                   stroke={accent}
-                  strokeWidth={24}
+                  strokeWidth={24 * performanceProfile.skills.ringHazeStrokeScale}
                   filter="url(#ring-haze)"
                 />
                 <motion.circle
@@ -301,8 +395,8 @@ export function SolarSystem() {
                   }}
                   transition={{
                     r: {
-                      duration: shouldReduceMotion ? 0.01 : 0.9,
-                      delay: shouldReduceMotion ? 0 : i * 0.06,
+                      duration: orbitMotionReduced ? 0.01 : 0.9,
+                      delay: orbitMotionReduced ? 0 : i * 0.06,
                       ease: [0.22, 1, 0.36, 1],
                     },
                     opacity: { duration: 0.25, ease: "easeOut" },
@@ -320,7 +414,6 @@ export function SolarSystem() {
           {skillGroups.map((g, gi) => {
             const isActive = activeGroup === null || activeGroup === g.id;
             const accent = GROUP_ACCENTS[g.id] ?? "#7dd3fc";
-            const direction = directionFor(gi);
             return (
               <g
                 key={g.id}
@@ -332,25 +425,23 @@ export function SolarSystem() {
                 {positions
                   .filter((p) => p.group.id === g.id)
                   .map((p) => {
-                    const orbitAngle =
-                      startAngleFor(p.groupIndex) +
-                      (p.skillIndex / p.total) * Math.PI * 2 +
-                      direction * ((orbitTime / p.rotationPeriod) * Math.PI * 2);
-                    const cx = CENTER + p.ringRadius * Math.cos(orbitAngle);
-                    const cy = CENTER + p.ringRadius * Math.sin(orbitAngle);
-                    const labelRadius = p.ringRadius + 36;
-                    const labelX = CENTER + labelRadius * Math.cos(orbitAngle);
-                    const labelY = CENTER + labelRadius * Math.sin(orbitAngle) + 4;
-                    const labelOffsetX = labelX - cx;
-                    const labelOffsetY = labelY - cy;
+                    const initial = planetPositionAt(p, 0);
                     const Icon = SKILL_ICONS[p.skill] ?? Globe;
+                    const key = planetKey(p);
                     return (
                       <g
-                        key={`${g.id}::${p.skill}`}
+                        key={key}
+                        ref={(element) => {
+                          if (element) {
+                            planetRefs.current.set(key, element);
+                          } else {
+                            planetRefs.current.delete(key);
+                          }
+                        }}
                         opacity={systemEntered ? 1 : 0}
-                        transform={`translate(${cx} ${cy})`}
+                        transform={`translate(${initial.cx} ${initial.cy})`}
                         style={{
-                          transition: shouldReduceMotion
+                          transition: orbitMotionReduced
                             ? "none"
                             : `opacity 360ms ease ${0.18 + gi * 0.07 + p.skillIndex * 0.018}s`,
                         }}
@@ -381,8 +472,15 @@ export function SolarSystem() {
                             strokeWidth={2}
                           />
                           <text
-                            x={labelOffsetX}
-                            y={labelOffsetY}
+                            ref={(element) => {
+                              if (element) {
+                                labelRefs.current.set(key, element);
+                              } else {
+                                labelRefs.current.delete(key);
+                              }
+                            }}
+                            x={initial.labelOffsetX}
+                            y={initial.labelOffsetY}
                             textAnchor="middle"
                             className="fill-zinc-300 font-mono"
                             fontSize="11"
@@ -403,13 +501,13 @@ export function SolarSystem() {
             initial={{ opacity: 0, scale: 0.65 }}
             animate={{
               opacity: systemEntered ? 1 : 0,
-              scale: shouldReduceMotion ? 1 : systemEntered ? [1, 1.05, 1] : 0.65,
+              scale: orbitMotionReduced ? 1 : systemEntered ? [1, 1.05, 1] : 0.65,
             }}
             transition={{
-              opacity: { duration: shouldReduceMotion ? 0.01 : 0.35 },
+              opacity: { duration: orbitMotionReduced ? 0.01 : 0.35 },
               scale: {
-                duration: shouldReduceMotion ? 0.01 : 4,
-                repeat: shouldReduceMotion ? 0 : Infinity,
+                duration: orbitMotionReduced ? 0.01 : 4,
+                repeat: orbitMotionReduced ? 0 : Infinity,
                 ease: "easeInOut",
               },
             }}
