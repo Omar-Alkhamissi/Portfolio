@@ -2489,6 +2489,21 @@ export function ProjectGraph() {
       })
       .filter((item): item is FlowEdgeCandidate => item !== null);
 
+    const allGraphAdjacency = new Map<string, FlowEdgeCandidate[]>();
+    for (const item of allGraphCandidates) {
+      const sourceList = allGraphAdjacency.get(item.source.id) ?? [];
+      sourceList.push(item);
+      allGraphAdjacency.set(item.source.id, sourceList);
+
+      const targetList = allGraphAdjacency.get(item.target.id) ?? [];
+      targetList.push(item);
+      allGraphAdjacency.set(item.target.id, targetList);
+    }
+
+    for (const connected of allGraphAdjacency.values()) {
+      connected.sort((a, b) => b.score - a.score || a.key.localeCompare(b.key));
+    }
+
     return CLUSTER_ORDER.flatMap((cluster, index) => {
       const seedEdges = allGraphCandidates
         .map((item) => {
@@ -2666,18 +2681,31 @@ export function ProjectGraph() {
             const connected = (adjacency.get(current.id) ?? []).filter((item) =>
               componentKeys.has(item.key),
             );
+            const visibleConnected = allGraphAdjacency.get(current.id) ?? [];
 
-            if (connected.length === 0) {
+            if (connected.length === 0 && visibleConnected.length === 0) {
               break;
             }
 
-            // Backtrack only at a true dead end. If another real relation is
-            // available, the wave must move forward through the graph instead.
+            // Backtrack only at a true visual dead end. Component-local routes
+            // keep each flow coherent, but if a node has another visible graph
+            // relation outside this component, use that before returning along
+            // the edge the wave just came from.
             const forwardOptions =
               connected.length > 1
                 ? connected.filter((item) => item.key !== previousEdgeKey)
                 : connected;
-            const options = forwardOptions.length > 0 ? forwardOptions : connected;
+            const visibleForwardOptions = visibleConnected.filter(
+              (item) => item.key !== previousEdgeKey,
+            );
+            const options =
+              forwardOptions.length > 0
+                ? forwardOptions
+                : visibleForwardOptions.length > 0
+                  ? visibleForwardOptions
+                  : connected.length > 0
+                    ? connected
+                    : visibleConnected;
             const minVisits = Math.min(
               ...options.map((item) => edgeVisits.get(item.key) ?? 0),
             );
