@@ -134,8 +134,8 @@ export function About({ variant = "section" }: AboutProps) {
         <SectionHeading
           id="about-heading"
           eyebrow="01 / About"
-          title="A programming student building practical software."
-          description="I'm a Computer Programming & Analysis student at Fanshawe College with hands-on experience across web development, databases, object-oriented programming, and data structures. I care about clean code, maintainability, and the small details that make software feel solid."
+          title="A software developer building practical systems."
+          description="I build across web applications, databases, object-oriented systems, and data structures. I care about clean code, maintainability, and the small details that make software feel solid."
         />
 
         <div className="mt-12 grid gap-4 sm:grid-cols-2">
