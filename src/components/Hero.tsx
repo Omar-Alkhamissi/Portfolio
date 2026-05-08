@@ -126,7 +126,7 @@ export function Hero({ aside }: HeroProps) {
                 {site.location}
               </span>
               <span className="hidden h-3 w-px bg-white/10 sm:block" />
-              <span>Computer Programming &amp; Analysis @ Fanshawe College</span>
+              <span>Full-stack software developer</span>
             </motion.div>
 
             {/* CTA buttons */}

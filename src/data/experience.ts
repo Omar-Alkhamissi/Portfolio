@@ -14,17 +14,17 @@ export type TimelineItem = {
 
 export const timeline: TimelineItem[] = [
   {
-    id: "fanshawe",
+    id: "software-development",
     type: "education",
     icon: GraduationCap,
-    title: "Computer Programming & Analysis",
-    org: "Fanshawe College",
+    title: "Software Development Program",
+    org: "Applied software training",
     date: "Expected 2026",
     location: "London, Ontario",
     bullets: [
-      "GPA: 3.91 — two-time Dean's List recipient.",
-      "Coursework across object-oriented programming, data structures, databases, and full-stack web development.",
-      "Hands-on projects in C++, C#, .NET, JavaScript, SQL Server, and PostgreSQL.",
+      "Built a strong base in object-oriented programming, data structures, databases, and full-stack web development.",
+      "Delivered hands-on projects in C++, C#, .NET, JavaScript, SQL Server, and PostgreSQL.",
+      "Focused on maintainable code, practical architecture, and clear technical communication.",
     ],
   },
   {
