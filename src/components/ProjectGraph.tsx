@@ -2218,6 +2218,7 @@ export function ProjectGraph() {
   const nodeVisualRefs = useRef<Map<string, SVGGElement>>(new Map());
   const edgeLineRefs = useRef<Map<string, EdgeLineRefs>>(new Map());
   const waveReservationsRef = useRef<Map<string, WaveNodeReservation>>(new Map());
+  const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const graphViewportRef = useRef<GraphViewport>(graphViewport);
   const perfMetricsRef = useRef<GraphPerfMetrics>({
@@ -2652,20 +2653,63 @@ export function ProjectGraph() {
   }, []);
 
   const handleGraphWheel = useCallback(
-    (event: React.WheelEvent<SVGSVGElement>) => {
-      const focus = screenToSvgViewport(event.clientX, event.clientY);
+    (clientX: number, clientY: number, deltaY: number) => {
+      const focus = screenToSvgViewport(clientX, clientY);
       if (!focus) {
         return;
       }
 
-      event.preventDefault();
-      const zoomMultiplier = Math.exp(-event.deltaY * 0.0012);
+      const zoomMultiplier = Math.exp(-deltaY * 0.0012);
       setGraphViewport((current) =>
         zoomGraphViewportAt(current, current.zoom * zoomMultiplier, focus),
       );
     },
     [screenToSvgViewport],
   );
+
+  useEffect(() => {
+    const handleWheel = (event: WheelEvent) => {
+      const graphFrame = graphFrameRef.current;
+      const target = event.target;
+      if (!graphFrame || !(target instanceof Node) || !graphFrame.contains(target)) {
+        return;
+      }
+
+      const scrollX = window.scrollX;
+      const scrollY = window.scrollY;
+
+      event.preventDefault();
+      event.stopPropagation();
+      handleGraphWheel(event.clientX, event.clientY, event.deltaY);
+
+      const restorePageScroll = () => {
+        const scrollElement = document.scrollingElement;
+        if (scrollElement) {
+          scrollElement.scrollLeft = scrollX;
+          scrollElement.scrollTop = scrollY;
+          return;
+        }
+
+        if (window.scrollX !== scrollX || window.scrollY !== scrollY) {
+          window.scrollTo(scrollX, scrollY);
+        }
+      };
+
+      window.requestAnimationFrame(restorePageScroll);
+      window.setTimeout(restorePageScroll, 0);
+      window.setTimeout(restorePageScroll, 80);
+    };
+    const wheelOptions: AddEventListenerOptions = {
+      capture: true,
+      passive: false,
+    };
+
+    window.addEventListener("wheel", handleWheel, wheelOptions);
+
+    return () => {
+      window.removeEventListener("wheel", handleWheel, wheelOptions);
+    };
+  }, [handleGraphWheel]);
 
   const handleGraphPointerDown = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
@@ -3825,11 +3869,13 @@ export function ProjectGraph() {
         <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.03] to-transparent" />
 
         <motion.div
+          ref={graphFrameRef}
           className="relative isolate aspect-[16/10] w-full"
           onMouseLeave={() => setHoveredId(null)}
           initial={false}
           style={{
             contain: "layout paint style",
+            overscrollBehavior: "contain",
             transform: "translateZ(0)",
           }}
         >
@@ -3872,7 +3918,6 @@ export function ProjectGraph() {
             preserveAspectRatio="xMidYMid meet"
             aria-label="Project graph"
             role="img"
-            onWheel={handleGraphWheel}
             onPointerDown={handleGraphPointerDown}
             onPointerMove={handleGraphPointerMove}
             onPointerUp={finishGraphPan}
