@@ -12,7 +12,6 @@ export type AdaptivePerformanceProfile = {
   pixelArea: number;
   graph: {
     maxFps: number;
-    timingRecalcMs: number;
     edgeGlowBlur: number;
     signalGlowBlur: number;
     nodeGlowBlur: number;
@@ -119,7 +118,6 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
   const graphProfiles: Record<PerformanceQuality, AdaptivePerformanceProfile["graph"]> = {
     full: {
       maxFps: 240,
-      timingRecalcMs: 420,
       edgeGlowBlur: 3.2,
       signalGlowBlur: 2.8,
       nodeGlowBlur: 7,
@@ -132,7 +130,6 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
     },
     balanced: {
       maxFps: 165,
-      timingRecalcMs: 700,
       edgeGlowBlur: 2.1,
       signalGlowBlur: 1.9,
       nodeGlowBlur: 4.8,
@@ -145,7 +142,6 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
     },
     lite: {
       maxFps: 120,
-      timingRecalcMs: 950,
       edgeGlowBlur: 1.2,
       signalGlowBlur: 1.1,
       nodeGlowBlur: 3,

@@ -5,6 +5,9 @@ import {
   Github,
   MousePointer2,
   Pin,
+  RotateCcw,
+  ZoomIn,
+  ZoomOut,
 } from "lucide-react";
 import { projects, type Project } from "../data/projects";
 import {
@@ -74,6 +77,19 @@ type NodeArrival = {
   color: string;
 };
 
+type WaveNodeReservation = {
+  flowId: string;
+  segmentKey: string;
+  updatedAt: number;
+};
+
+type WaveDynamicSegmentState = {
+  slotKey: string;
+  cycleNumber: number;
+  activeIndex: number;
+  segment: TubeSegment;
+};
+
 type LivePosition = { x: number; y: number };
 
 type EdgeEndpoints = {
@@ -92,6 +108,64 @@ type EdgeLineRefs = {
 type GraphPerfMetric = {
   frameMs: number;
   relationCalcMs: number;
+};
+
+type GraphFloatSeed = {
+  phaseX: number;
+  phaseY: number;
+  phaseOrbit: number;
+  speedX: number;
+  speedY: number;
+  ampX: number;
+  ampY: number;
+};
+
+type GraphViewport = {
+  zoom: number;
+  panX: number;
+  panY: number;
+};
+
+type DragTugEdge = {
+  source: string;
+  target: string;
+  weight: number;
+};
+
+type DragInfluenceGraph = {
+  influenceById: Map<string, number>;
+  depthById: Map<string, number>;
+  tugEdges: DragTugEdge[];
+};
+
+type GraphDragState = {
+  nodeId: string;
+  pointerId: number;
+  // Pointer coordinates at drag start, in graph coordinate units.
+  startSvgX: number;
+  startSvgY: number;
+  moved: boolean;
+  currentDx: number;
+  currentDy: number;
+  velocityById: Map<string, LivePosition>;
+  lastTugAt: number | null;
+  pending: Map<string, LivePosition> | null;
+  inverseCtm: DOMMatrix | null;
+  influenceById: Map<string, number>;
+  depthById: Map<string, number>;
+  tugEdges: DragTugEdge[];
+  startPositions: Map<string, LivePosition>;
+  startFloatOffsets: Map<string, LivePosition>;
+};
+
+type GraphPanState = {
+  pointerId: number;
+  startSvgX: number;
+  startSvgY: number;
+  startPanX: number;
+  startPanY: number;
+  moved: boolean;
+  inverseCtm: DOMMatrix | null;
 };
 
 type GraphPerfMetrics = {
@@ -131,6 +205,7 @@ const VIEWBOX_W = 1320;
 const VIEWBOX_H = 860;
 const CENTER_X = VIEWBOX_W / 2;
 const CENTER_Y = VIEWBOX_H / 2;
+const TAU = Math.PI * 2;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 const NODE_RADIUS = 27;
 const LINE_GAP = NODE_RADIUS + 3;
@@ -158,6 +233,7 @@ const WAVE_COLOR_BLEND_STRENGTH = 0.74;
 // Fade the pulse as it enters/leaves a badge so the head never flashes on the
 // next relation before the badge ping finishes.
 const WAVE_NODE_ABSORB_DISTANCE = 0.12;
+const WAVE_RESERVATION_STALE_MS = 1800;
 // Blend factor between pure linear motion (0) and a full pendulum / smoothstep
 // (1). At 0 the wave reverses direction instantaneously at terminals. At 1
 // it slows to a stop and accelerates back, but the middle of each traversal
@@ -193,6 +269,36 @@ const BLOOM_EASE_SLOW_IN_OUT: [number, number, number, number] = [0.45, 0, 0.2, 
 // Drag — how many viewport units the pointer must travel before a drag is
 // detected. Below this threshold we treat pointer-up as a click (pin toggle).
 const DRAG_THRESHOLD = 4;
+// Ambient graph drift. This is intentionally a visual layer, not a topology
+// relayout: links, waves, and drag all read the same live coordinates.
+const GRAPH_FLOAT_CLUSTER_X = 4.4;
+const GRAPH_FLOAT_CLUSTER_Y = 3.8;
+const GRAPH_FLOAT_NODE_X = 8.8;
+const GRAPH_FLOAT_NODE_Y = 7.2;
+const GRAPH_FLOAT_ORBIT = 2.4;
+const GRAPH_FLOAT_MIN_SPEED = 0.32;
+const GRAPH_FLOAT_MAX_SPEED = 0.62;
+const GRAPH_ZOOM_MIN = 0.45;
+const GRAPH_ZOOM_MAX = 1.85;
+const GRAPH_ZOOM_STEP = 0.18;
+const GRAPH_PAN_OVERSCROLL = 1.25;
+const GRAPH_NODE_DRAG_OVERSCROLL = Math.max(VIEWBOX_W, VIEWBOX_H) * 4;
+const GRAPH_FILTER_MARGIN = GRAPH_NODE_DRAG_OVERSCROLL + 180;
+const DRAG_TUG_MAX_DEPTH = 3;
+const DRAG_TUG_DIRECT_PULL = 0.68;
+const DRAG_TUG_DECAY = 0.46;
+const DRAG_TUG_MIN_PULL = 0.075;
+const DRAG_TUG_FLOAT_SCALE = 0.58;
+const DRAG_TUG_ANCHOR_SPRING = 8.5;
+const DRAG_TUG_EDGE_SPRING = 74;
+const DRAG_TUG_EDGE_DAMPING = 1.4;
+const DRAG_TUG_DAMPING_BASE = 5.9;
+const DRAG_TUG_DAMPING_DEPTH = 0.95;
+const DRAG_TUG_MASS_BASE = 0.86;
+const DRAG_TUG_MASS_DEPTH = 0.34;
+const DRAG_TUG_MASS_JITTER = 0.42;
+const DRAG_TUG_MAX_DT = 0.045;
+const DRAG_TUG_MAX_VELOCITY = 1200;
 
 const TECH_WEIGHT: Record<string, number> = {
   react: 1.2,
@@ -669,6 +775,74 @@ function fallbackEdgeColor(source: string, target: string) {
 
 function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
+}
+
+function createGraphFloatSeed(key: string): GraphFloatSeed {
+  const random = seededRandom(hashString(`project-graph-float:${key}`));
+
+  return {
+    phaseX: random() * TAU,
+    phaseY: random() * TAU,
+    phaseOrbit: random() * TAU,
+    speedX:
+      GRAPH_FLOAT_MIN_SPEED +
+      random() * (GRAPH_FLOAT_MAX_SPEED - GRAPH_FLOAT_MIN_SPEED),
+    speedY:
+      GRAPH_FLOAT_MIN_SPEED +
+      random() * (GRAPH_FLOAT_MAX_SPEED - GRAPH_FLOAT_MIN_SPEED),
+    ampX: 0.74 + random() * 0.52,
+    ampY: 0.74 + random() * 0.52,
+  };
+}
+
+function graphFloatScaleFor(quality: AdaptivePerformanceProfile["quality"]) {
+  if (quality === "lite") {
+    return 0.58;
+  }
+
+  if (quality === "balanced") {
+    return 0.78;
+  }
+
+  return 1;
+}
+
+function clampGraphViewport(viewport: GraphViewport): GraphViewport {
+  const zoom = clamp(viewport.zoom, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+  const scaledWidth = VIEWBOX_W * zoom;
+  const scaledHeight = VIEWBOX_H * zoom;
+  const overscrollX = VIEWBOX_W * GRAPH_PAN_OVERSCROLL;
+  const overscrollY = VIEWBOX_H * GRAPH_PAN_OVERSCROLL;
+
+  return {
+    zoom,
+    panX: clamp(viewport.panX, -scaledWidth - overscrollX, VIEWBOX_W + overscrollX),
+    panY: clamp(viewport.panY, -scaledHeight - overscrollY, VIEWBOX_H + overscrollY),
+  };
+}
+
+function zoomGraphViewportAt(
+  viewport: GraphViewport,
+  nextZoom: number,
+  focus: LivePosition = { x: CENTER_X, y: CENTER_Y },
+) {
+  const zoom = clamp(nextZoom, GRAPH_ZOOM_MIN, GRAPH_ZOOM_MAX);
+  const graphX = (focus.x - viewport.panX) / viewport.zoom;
+  const graphY = (focus.y - viewport.panY) / viewport.zoom;
+
+  return clampGraphViewport({
+    zoom,
+    panX: focus.x - graphX * zoom,
+    panY: focus.y - graphY * zoom,
+  });
+}
+
+function graphViewportTransform(viewport: GraphViewport) {
+  return `translate(${viewport.panX.toFixed(2)} ${viewport.panY.toFixed(2)}) scale(${viewport.zoom.toFixed(3)})`;
+}
+
+function dragTugJitterFor(nodeId: string) {
+  return (hashString(`project-graph-drag-tug:${nodeId}`) % 1000) / 1000;
 }
 
 type RgbColor = { r: number; g: number; b: number };
@@ -1179,7 +1353,10 @@ function closestPointOnSegment(
   };
 }
 
-function clampNodeToViewport(node: Node) {
+function getNodeViewportBounds(
+  node: Pick<Node, "x" | "y" | "labelWidth" | "labelHeight">,
+  overscroll = 0,
+) {
   const placement = getLabelPlacement(node);
   const extraLeft =
     placement === "left" ? node.labelWidth + NODE_RADIUS + LABEL_GAP : NODE_RADIUS + 20;
@@ -1192,8 +1369,124 @@ function clampNodeToViewport(node: Node) {
       ? node.labelHeight + NODE_RADIUS + LABEL_GAP
       : NODE_RADIUS + 20;
 
-  node.x = clamp(node.x, extraLeft, VIEWBOX_W - extraRight);
-  node.y = clamp(node.y, extraTop, VIEWBOX_H - extraBottom);
+  return {
+    minX: extraLeft - overscroll,
+    maxX: VIEWBOX_W - extraRight + overscroll,
+    minY: extraTop - overscroll,
+    maxY: VIEWBOX_H - extraBottom + overscroll,
+  };
+}
+
+function clampPositionToNodeBounds(
+  node: Node,
+  position: LivePosition,
+  overscroll = 0,
+): LivePosition {
+  const bounds = getNodeViewportBounds(node, overscroll);
+
+  return {
+    x: clamp(position.x, bounds.minX, bounds.maxX),
+    y: clamp(position.y, bounds.minY, bounds.maxY),
+  };
+}
+
+function graphFloatOffsetForNode(
+  nodeSeed: GraphFloatSeed,
+  clusterSeed: GraphFloatSeed,
+  seconds: number,
+  scale: number,
+): LivePosition {
+  const clusterX =
+    Math.cos(seconds * clusterSeed.speedX + clusterSeed.phaseX) *
+    GRAPH_FLOAT_CLUSTER_X *
+    clusterSeed.ampX;
+  const clusterY =
+    Math.sin(seconds * clusterSeed.speedY + clusterSeed.phaseY) *
+    GRAPH_FLOAT_CLUSTER_Y *
+    clusterSeed.ampY;
+  const orbit = seconds * nodeSeed.speedY * 0.72 + nodeSeed.phaseOrbit;
+  const nodeX =
+    Math.cos(seconds * nodeSeed.speedX + nodeSeed.phaseX) *
+      GRAPH_FLOAT_NODE_X *
+      nodeSeed.ampX +
+    Math.cos(orbit) * GRAPH_FLOAT_ORBIT;
+  const nodeY =
+    Math.sin(seconds * nodeSeed.speedY + nodeSeed.phaseY) *
+      GRAPH_FLOAT_NODE_Y *
+      nodeSeed.ampY +
+    Math.sin(orbit) * GRAPH_FLOAT_ORBIT;
+
+  return {
+    x: (clusterX + nodeX) * scale,
+    y: (clusterY + nodeY) * scale,
+  };
+}
+
+function graphFloatOffsetForNodeAt(
+  node: Node | undefined,
+  nodeSeed: GraphFloatSeed | undefined,
+  clusterSeed: GraphFloatSeed | undefined,
+  seconds: number,
+  scale: number,
+) {
+  if (!node || !nodeSeed || !clusterSeed || scale <= 0) {
+    return { x: 0, y: 0 };
+  }
+
+  return graphFloatOffsetForNode(nodeSeed, clusterSeed, seconds, scale);
+}
+
+function positionWithoutFloat(
+  node: Node,
+  position: LivePosition,
+  nodeSeed: GraphFloatSeed | undefined,
+  clusterSeed: GraphFloatSeed | undefined,
+  seconds: number,
+  scale: number,
+  overscroll = 0,
+) {
+  const offset = graphFloatOffsetForNodeAt(
+    node,
+    nodeSeed,
+    clusterSeed,
+    seconds,
+    scale,
+  );
+
+  return clampPositionToNodeBounds(
+    node,
+    {
+      x: position.x - offset.x,
+      y: position.y - offset.y,
+    },
+    overscroll,
+  );
+}
+
+function floatingPositionForNode(
+  node: Node,
+  nodeSeed: GraphFloatSeed,
+  clusterSeed: GraphFloatSeed,
+  seconds: number,
+  scale: number,
+  overscroll = 0,
+): LivePosition {
+  const offset = graphFloatOffsetForNode(nodeSeed, clusterSeed, seconds, scale);
+
+  return clampPositionToNodeBounds(
+    node,
+    {
+      x: node.x + offset.x,
+      y: node.y + offset.y,
+    },
+    overscroll,
+  );
+}
+
+function clampNodeToViewport(node: Node) {
+  const clamped = clampPositionToNodeBounds(node, node);
+  node.x = clamped.x;
+  node.y = clamped.y;
 }
 
 function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
@@ -1882,6 +2175,10 @@ export function ProjectGraph() {
   );
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragPerfActive, setDragPerfActive] = useState(false);
+  const [graphPanning, setGraphPanning] = useState(false);
+  const [graphViewport, setGraphViewport] = useState<GraphViewport>(() =>
+    clampGraphViewport({ zoom: 1, panX: 0, panY: 0 }),
+  );
   const arrivalPingTimers = useRef<Map<string, number>>(new Map());
   const shouldReduceMotion = useReducedMotion();
   const performanceProfile = useAdaptivePerformanceProfile();
@@ -1889,6 +2186,12 @@ export function ProjectGraph() {
   const prefersReducedMotion = Boolean(shouldReduceMotion);
   const graphMotionPaused = Boolean(diagnostics.staticMode || dragPerfActive);
   const graphMotionReduced = graphMotionPaused;
+  const graphFloatEnabled = Boolean(
+    !diagnostics.staticMode && !prefersReducedMotion,
+  );
+  const graphFloatScale = graphFloatEnabled
+    ? graphFloatScaleFor(performanceProfile.quality)
+    : 0;
   const debugState = usePerformanceDebugState();
   const graphDebugEnabled = debugState.enabled;
   const graphQuality = useMemo(
@@ -1914,7 +2217,9 @@ export function ProjectGraph() {
   const livePositionsRef = useRef<Map<string, LivePosition>>(new Map());
   const nodeVisualRefs = useRef<Map<string, SVGGElement>>(new Map());
   const edgeLineRefs = useRef<Map<string, EdgeLineRefs>>(new Map());
+  const waveReservationsRef = useRef<Map<string, WaveNodeReservation>>(new Map());
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const graphViewportRef = useRef<GraphViewport>(graphViewport);
   const perfMetricsRef = useRef<GraphPerfMetrics>({
     waveFrameMs: 0,
     relationCalcMs: 0,
@@ -1933,23 +2238,13 @@ export function ProjectGraph() {
     graphRect: null,
     pointer: null,
   });
+  graphViewportRef.current = graphViewport;
   // ─── Drag system ──────────────────────────────────────────────────────────
   // Pointer events drive one live coordinate source. During active drag we
-  // write directly to the SVG node group and relation-line attributes, then
-  // commit the same coordinate to React state for the settled render.
-  const dragStateRef = useRef<{
-    nodeId: string;
-    pointerId: number;
-    // Pointer coordinates at drag start, in SVG viewport units.
-    startSvgX: number;
-    startSvgY: number;
-    // Node coordinates at drag start.
-    startNodeX: number;
-    startNodeY: number;
-    moved: boolean;
-    pending: { x: number; y: number } | null;
-    inverseCtm: DOMMatrix | null;
-  } | null>(null);
+  // write directly to the SVG node groups and relation-line attributes, then
+  // commit the tugged coordinates to React state for the settled render.
+  const dragStateRef = useRef<GraphDragState | null>(null);
+  const graphPanStateRef = useRef<GraphPanState | null>(null);
 
   const { nodes, edges } = useMemo(() => {
     const graph = buildGraph(projects);
@@ -1974,18 +2269,42 @@ export function ProjectGraph() {
       }),
     [nodes, draggedPositions],
   );
+  const nodeFloatSeeds = useMemo(
+    () => new Map(nodes.map((node) => [node.id, createGraphFloatSeed(node.id)])),
+    [nodes],
+  );
+  const clusterFloatSeeds = useMemo(
+    () =>
+      new Map<ClusterKey, GraphFloatSeed>(
+        CLUSTER_ORDER.map((cluster) => [
+          cluster,
+          createGraphFloatSeed(`cluster:${cluster}`),
+        ]),
+      ),
+    [],
+  );
 
   // Keep the ref in sync so rAF readers always see the latest positions.
   // While a pointer drag is active, preserve the directly-written coordinate
-  // because React may render before the coalesced state commit lands.
+  // because React may render before the coalesced state commit lands. While
+  // floating, preserve the last visual coordinate so hover/focus renders do
+  // not briefly snap nodes back to their static anchors.
   {
     const previous = livePositionsRef.current;
-    const activeDragId = dragStateRef.current?.nodeId ?? null;
+    const activeDrag = dragStateRef.current;
+    const activeDragInfluences = activeDrag?.moved
+      ? activeDrag.influenceById
+      : null;
     const fresh = new Map<string, LivePosition>();
     for (const node of liveNodes) {
       const liveDragPosition =
-        activeDragId === node.id ? previous.get(node.id) : null;
-      fresh.set(node.id, liveDragPosition ?? { x: node.x, y: node.y });
+        activeDragInfluences?.has(node.id) ? previous.get(node.id) : null;
+      const preservedFloatPosition =
+        graphFloatEnabled ? previous.get(node.id) : null;
+      fresh.set(
+        node.id,
+        liveDragPosition ?? preservedFloatPosition ?? { x: node.x, y: node.y },
+      );
     }
     livePositionsRef.current = fresh;
   }
@@ -2191,6 +2510,37 @@ export function ProjectGraph() {
     () => new Map(liveNodes.map((node) => [node.id, node])),
     [liveNodes],
   );
+  const waveSegmentOptionsByStartId = useMemo(() => {
+    const map = new Map<string, TubeSegment[]>();
+
+    for (const edge of edges) {
+      const sourceOptions = map.get(edge.source) ?? [];
+      sourceOptions.push({
+        edge,
+        startId: edge.source,
+        endId: edge.target,
+      });
+      map.set(edge.source, sourceOptions);
+
+      const targetOptions = map.get(edge.target) ?? [];
+      targetOptions.push({
+        edge,
+        startId: edge.target,
+        endId: edge.source,
+      });
+      map.set(edge.target, targetOptions);
+    }
+
+    for (const options of map.values()) {
+      options.sort(
+        (a, b) =>
+          b.edge.weight - a.edge.weight ||
+          a.endId.localeCompare(b.endId),
+      );
+    }
+
+    return map;
+  }, [edges]);
   const nodeAccentById = useMemo(() => {
     const ranked = new Map<string, { color: string; score: number }>();
 
@@ -2238,14 +2588,15 @@ export function ProjectGraph() {
       Array.from(ranked.entries()).map(([nodeId, value]) => [nodeId, value.color]),
     );
   }, [activeId, edges]);
-  const screenToSvg = useCallback((clientX: number, clientY: number) => {
+  const screenToSvgViewport = useCallback((clientX: number, clientY: number) => {
     const svg = svgRef.current;
     if (!svg) {
       return null;
     }
 
     const drag = dragStateRef.current;
-    let inverseCtm = drag?.inverseCtm ?? null;
+    const pan = graphPanStateRef.current;
+    let inverseCtm = drag?.inverseCtm ?? pan?.inverseCtm ?? null;
     if (!inverseCtm) {
       const ctm = svg.getScreenCTM();
       if (!ctm) {
@@ -2254,6 +2605,9 @@ export function ProjectGraph() {
       inverseCtm = ctm.inverse();
       if (drag) {
         drag.inverseCtm = inverseCtm;
+      }
+      if (pan) {
+        pan.inverseCtm = inverseCtm;
       }
     }
 
@@ -2264,13 +2618,250 @@ export function ProjectGraph() {
     return { x: transformed.x, y: transformed.y };
   }, []);
 
-  const commitDragPosition = useCallback((nodeId: string, x: number, y: number) => {
-    setDraggedPositions((current) => {
-      const next = new Map(current);
-      next.set(nodeId, { x, y });
-      return next;
-    });
+  const svgViewportToGraph = useCallback((position: LivePosition) => {
+    const viewport = graphViewportRef.current;
+
+    return {
+      x: (position.x - viewport.panX) / viewport.zoom,
+      y: (position.y - viewport.panY) / viewport.zoom,
+    };
   }, []);
+
+  const screenToGraph = useCallback(
+    (clientX: number, clientY: number) => {
+      const position = screenToSvgViewport(clientX, clientY);
+      return position ? svgViewportToGraph(position) : null;
+    },
+    [screenToSvgViewport, svgViewportToGraph],
+  );
+
+  const zoomGraph = useCallback(
+    (direction: 1 | -1) => {
+      setGraphViewport((current) =>
+        zoomGraphViewportAt(
+          current,
+          current.zoom * (1 + direction * GRAPH_ZOOM_STEP),
+        ),
+      );
+    },
+    [],
+  );
+
+  const resetGraphZoom = useCallback(() => {
+    setGraphViewport(clampGraphViewport({ zoom: 1, panX: 0, panY: 0 }));
+  }, []);
+
+  const handleGraphWheel = useCallback(
+    (event: React.WheelEvent<SVGSVGElement>) => {
+      const focus = screenToSvgViewport(event.clientX, event.clientY);
+      if (!focus) {
+        return;
+      }
+
+      event.preventDefault();
+      const zoomMultiplier = Math.exp(-event.deltaY * 0.0012);
+      setGraphViewport((current) =>
+        zoomGraphViewportAt(current, current.zoom * zoomMultiplier, focus),
+      );
+    },
+    [screenToSvgViewport],
+  );
+
+  const handleGraphPointerDown = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      if (event.button !== 0 || (event.pointerType === "mouse" && event.buttons !== 1)) {
+        return;
+      }
+
+      const target = event.target instanceof Element ? event.target : null;
+      if (target?.closest("[data-project-graph-node='true']")) {
+        return;
+      }
+
+      const start = screenToSvgViewport(event.clientX, event.clientY);
+      if (!start) {
+        return;
+      }
+
+      const ctm = svgRef.current?.getScreenCTM() ?? null;
+      const viewport = graphViewportRef.current;
+
+      event.currentTarget.setPointerCapture(event.pointerId);
+      graphPanStateRef.current = {
+        pointerId: event.pointerId,
+        startSvgX: start.x,
+        startSvgY: start.y,
+        startPanX: viewport.panX,
+        startPanY: viewport.panY,
+        moved: false,
+        inverseCtm: ctm ? ctm.inverse() : null,
+      };
+      setGraphPanning(true);
+      event.preventDefault();
+    },
+    [screenToSvgViewport],
+  );
+
+  const handleGraphPointerMove = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      const pan = graphPanStateRef.current;
+      if (!pan || pan.pointerId !== event.pointerId) {
+        return;
+      }
+
+      const current = screenToSvgViewport(event.clientX, event.clientY);
+      if (!current) {
+        return;
+      }
+
+      const dx = current.x - pan.startSvgX;
+      const dy = current.y - pan.startSvgY;
+
+      if (!pan.moved && Math.hypot(dx, dy) < DRAG_THRESHOLD) {
+        return;
+      }
+
+      pan.moved = true;
+      event.preventDefault();
+      setGraphViewport(() =>
+        clampGraphViewport({
+          zoom: graphViewportRef.current.zoom,
+          panX: pan.startPanX + dx,
+          panY: pan.startPanY + dy,
+        }),
+      );
+    },
+    [screenToSvgViewport],
+  );
+
+  const finishGraphPan = useCallback(
+    (event: React.PointerEvent<SVGSVGElement>) => {
+      const pan = graphPanStateRef.current;
+      if (!pan || pan.pointerId !== event.pointerId) {
+        return;
+      }
+
+      try {
+        event.currentTarget.releasePointerCapture(pan.pointerId);
+      } catch {
+        // pointer capture may already be released — safe to ignore.
+      }
+
+      if (pan.moved) {
+        event.preventDefault();
+      }
+
+      graphPanStateRef.current = null;
+      setGraphPanning(false);
+    },
+    [],
+  );
+
+  const buildDragInfluenceMap = useCallback(
+    (rootId: string): DragInfluenceGraph => {
+      const influenceById = new Map<string, number>([[rootId, 1]]);
+      const depthById = new Map<string, number>([[rootId, 0]]);
+      const queue: Array<{ nodeId: string; depth: number; influence: number }> = [
+        { nodeId: rootId, depth: 0, influence: 1 },
+      ];
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+
+        if (current.depth >= DRAG_TUG_MAX_DEPTH) {
+          continue;
+        }
+
+        const depthPull =
+          current.depth === 0 ? DRAG_TUG_DIRECT_PULL : DRAG_TUG_DECAY;
+
+        for (const edge of edgesByNode.get(current.nodeId) ?? []) {
+          const otherId =
+            edge.source === current.nodeId ? edge.target : edge.source;
+          const edgePull = clamp(
+            0.78 + Math.min(edge.weight, 3) * 0.09,
+            0.82,
+            1.06,
+          );
+          const nextInfluence = current.influence * depthPull * edgePull;
+          const existingInfluence = influenceById.get(otherId) ?? 0;
+
+          if (
+            nextInfluence <= existingInfluence ||
+            nextInfluence < DRAG_TUG_MIN_PULL
+          ) {
+            continue;
+          }
+
+          influenceById.set(otherId, nextInfluence);
+          depthById.set(otherId, current.depth + 1);
+          queue.push({
+            nodeId: otherId,
+            depth: current.depth + 1,
+            influence: nextInfluence,
+          });
+        }
+      }
+
+      const tugEdges: DragTugEdge[] = [];
+      const seenEdgeKeys = new Set<string>();
+
+      for (const nodeId of influenceById.keys()) {
+        for (const edge of edgesByNode.get(nodeId) ?? []) {
+          if (!influenceById.has(edge.source) || !influenceById.has(edge.target)) {
+            continue;
+          }
+
+          const edgeKey = edgePairKey(edge.source, edge.target);
+          if (seenEdgeKeys.has(edgeKey)) {
+            continue;
+          }
+
+          seenEdgeKeys.add(edgeKey);
+          tugEdges.push({
+            source: edge.source,
+            target: edge.target,
+            weight: edge.weight,
+          });
+        }
+      }
+
+      return { influenceById, depthById, tugEdges };
+    },
+    [edgesByNode],
+  );
+
+  const floatOffsetForNodeId = useCallback(
+    (nodeId: string, seconds: number) => {
+      const node = liveNodeById.get(nodeId) ?? nodeById.get(nodeId);
+      const nodeSeed = nodeFloatSeeds.get(nodeId);
+      const clusterSeed = node ? clusterFloatSeeds.get(node.cluster) : undefined;
+
+      return graphFloatOffsetForNodeAt(
+        node,
+        nodeSeed,
+        clusterSeed,
+        seconds,
+        graphFloatScale,
+      );
+    },
+    [clusterFloatSeeds, graphFloatScale, liveNodeById, nodeById, nodeFloatSeeds],
+  );
+
+  const commitDragPositions = useCallback(
+    (positions: Map<string, LivePosition>) => {
+      setDraggedPositions((current) => {
+        const next = new Map(current);
+
+        for (const [nodeId, position] of positions) {
+          next.set(nodeId, position);
+        }
+
+        return next;
+      });
+    },
+    [],
+  );
 
   const setNodeVisualRef = useCallback((nodeId: string, element: SVGGElement | null) => {
     if (element) {
@@ -2301,12 +2892,25 @@ export function ProjectGraph() {
     [],
   );
 
-  const syncIncidentEdges = useCallback(
-    (nodeId: string) => {
-      const positions = livePositionsRef.current;
-      const incidentEdges = edgesByNode.get(nodeId) ?? [];
+  const syncNodeVisualPosition = useCallback(
+    (nodeId: string, position: LivePosition) => {
+      const nodeElement = nodeVisualRefs.current.get(nodeId);
+      if (!nodeElement) {
+        return;
+      }
 
-      for (const edge of incidentEdges) {
+      setSvgAttr(
+        nodeElement,
+        "transform",
+        `translate(${position.x.toFixed(2)} ${position.y.toFixed(2)})`,
+      );
+    },
+    [],
+  );
+
+  const syncAllEdges = useCallback(
+    (positions: Map<string, LivePosition>) => {
+      for (const edge of edges) {
         const source = positions.get(edge.source);
         const target = positions.get(edge.target);
 
@@ -2326,22 +2930,330 @@ export function ProjectGraph() {
         setLineEndpoints(refs.core, endpoints);
       }
     },
-    [edgesByNode],
+    [edges],
   );
 
-  const applyLiveDragPosition = useCallback(
-    (nodeId: string, x: number, y: number) => {
-      livePositionsRef.current.set(nodeId, { x, y });
-
-      const nodeElement = nodeVisualRefs.current.get(nodeId);
-      if (nodeElement) {
-        nodeElement.setAttribute("transform", `translate(${x.toFixed(2)} ${y.toFixed(2)})`);
+  const syncGraphVisuals = useCallback(
+    (positions: Map<string, LivePosition>) => {
+      for (const [nodeId, position] of positions) {
+        syncNodeVisualPosition(nodeId, position);
       }
 
-      syncIncidentEdges(nodeId);
+      syncAllEdges(positions);
     },
-    [syncIncidentEdges],
+    [syncAllEdges, syncNodeVisualPosition],
   );
+
+  const applyLiveDragPositions = useCallback(
+    (positions: Map<string, LivePosition>) => {
+      const next = new Map(livePositionsRef.current);
+
+      for (const [nodeId, position] of positions) {
+        next.set(nodeId, position);
+        syncNodeVisualPosition(nodeId, position);
+      }
+
+      livePositionsRef.current = next;
+      syncAllEdges(next);
+    },
+    [syncAllEdges, syncNodeVisualPosition],
+  );
+
+  const computeDragTugPositions = useCallback(
+    (drag: GraphDragState, seconds: number) => {
+      const positions = new Map<string, LivePosition>();
+      const dt = clamp(
+        drag.lastTugAt === null ? 1 / 60 : seconds - drag.lastTugAt,
+        1 / 240,
+        DRAG_TUG_MAX_DT,
+      );
+      drag.lastTugAt = seconds;
+
+      const rootNode = liveNodeById.get(drag.nodeId) ?? nodeById.get(drag.nodeId);
+      const rootStart = drag.startPositions.get(drag.nodeId);
+
+      if (!rootNode || !rootStart) {
+        drag.pending = positions;
+        return positions;
+      }
+
+      const previousRoot =
+        drag.pending?.get(drag.nodeId) ??
+        livePositionsRef.current.get(drag.nodeId) ??
+        rootStart;
+      const rootTarget = clampPositionToNodeBounds(
+        rootNode,
+        {
+          x: rootStart.x + drag.currentDx,
+          y: rootStart.y + drag.currentDy,
+        },
+        GRAPH_NODE_DRAG_OVERSCROLL,
+      );
+      let rootVx = (rootTarget.x - previousRoot.x) / dt;
+      let rootVy = (rootTarget.y - previousRoot.y) / dt;
+      const rootVelocityLength = Math.hypot(rootVx, rootVy);
+
+      if (rootVelocityLength > DRAG_TUG_MAX_VELOCITY) {
+        const scale = DRAG_TUG_MAX_VELOCITY / rootVelocityLength;
+        rootVx *= scale;
+        rootVy *= scale;
+      }
+
+      positions.set(drag.nodeId, rootTarget);
+      drag.velocityById.set(drag.nodeId, { x: rootVx, y: rootVy });
+      const velocitySnapshot = new Map(drag.velocityById);
+
+      const currentById = new Map<string, LivePosition>([
+        [drag.nodeId, rootTarget],
+      ]);
+
+      for (const nodeId of drag.influenceById.keys()) {
+        if (nodeId === drag.nodeId) {
+          continue;
+        }
+
+        const start = drag.startPositions.get(nodeId);
+
+        if (!start) {
+          continue;
+        }
+
+        currentById.set(
+          nodeId,
+          drag.pending?.get(nodeId) ??
+            livePositionsRef.current.get(nodeId) ??
+            start,
+        );
+      }
+
+      for (const [nodeId, influence] of drag.influenceById) {
+        if (nodeId === drag.nodeId) {
+          continue;
+        }
+
+        const node = liveNodeById.get(nodeId) ?? nodeById.get(nodeId);
+        const start = drag.startPositions.get(nodeId);
+        const current = currentById.get(nodeId);
+
+        if (!node || !start || !current) {
+          continue;
+        }
+
+        const depth = drag.depthById.get(nodeId) ?? DRAG_TUG_MAX_DEPTH;
+        const startFloat = drag.startFloatOffsets.get(nodeId) ?? { x: 0, y: 0 };
+        const currentFloat = floatOffsetForNodeId(nodeId, seconds);
+        const floatFollow =
+          DRAG_TUG_FLOAT_SCALE * Math.max(0.28, 1 - influence * 0.45);
+        const anchorTarget = clampPositionToNodeBounds(
+          node,
+          {
+            x:
+              start.x +
+              drag.currentDx * influence * 0.16 +
+              (currentFloat.x - startFloat.x) * floatFollow,
+            y:
+              start.y +
+              drag.currentDy * influence * 0.16 +
+              (currentFloat.y - startFloat.y) * floatFollow,
+          },
+          GRAPH_NODE_DRAG_OVERSCROLL,
+        );
+        const velocity = velocitySnapshot.get(nodeId) ?? { x: 0, y: 0 };
+        const anchorSpring =
+          DRAG_TUG_ANCHOR_SPRING * (0.42 + influence * 0.58);
+        let forceX = (anchorTarget.x - current.x) * anchorSpring;
+        let forceY = (anchorTarget.y - current.y) * anchorSpring;
+
+        for (const edge of drag.tugEdges) {
+          if (edge.source !== nodeId && edge.target !== nodeId) {
+            continue;
+          }
+
+          const otherId = edge.source === nodeId ? edge.target : edge.source;
+          const otherPosition = currentById.get(otherId);
+          const otherStart = drag.startPositions.get(otherId);
+
+          if (!otherPosition || !otherStart) {
+            continue;
+          }
+
+          const otherInfluence = drag.influenceById.get(otherId) ?? 0;
+          const edgeInfluence = Math.max(influence, otherInfluence);
+          const edgeStrength =
+            DRAG_TUG_EDGE_SPRING *
+            (0.58 + Math.min(edge.weight, 3) * 0.14) *
+            Math.max(0.18, edgeInfluence) *
+            (1 / (1 + depth * 0.16));
+          const targetFromEdge = {
+            x: otherPosition.x - (otherStart.x - start.x),
+            y: otherPosition.y - (otherStart.y - start.y),
+          };
+
+          forceX += (targetFromEdge.x - current.x) * edgeStrength;
+          forceY += (targetFromEdge.y - current.y) * edgeStrength;
+
+          const otherVelocity = velocitySnapshot.get(otherId) ?? { x: 0, y: 0 };
+          const relativeDamping =
+            DRAG_TUG_EDGE_DAMPING * Math.max(0.16, edgeInfluence);
+
+          forceX += (otherVelocity.x - velocity.x) * relativeDamping;
+          forceY += (otherVelocity.y - velocity.y) * relativeDamping;
+        }
+
+        const jitter = dragTugJitterFor(nodeId);
+        const mass =
+          DRAG_TUG_MASS_BASE +
+          depth * DRAG_TUG_MASS_DEPTH +
+          jitter * DRAG_TUG_MASS_JITTER +
+          (1 - influence) * 0.24;
+        const damping =
+          DRAG_TUG_DAMPING_BASE +
+          depth * DRAG_TUG_DAMPING_DEPTH +
+          (1 - influence) * 0.72;
+        const decay = Math.exp(-damping * dt);
+        let nextVx = (velocity.x + (forceX / mass) * dt) * decay;
+        let nextVy = (velocity.y + (forceY / mass) * dt) * decay;
+        const velocityLength = Math.hypot(nextVx, nextVy);
+
+        if (velocityLength > DRAG_TUG_MAX_VELOCITY) {
+          const scale = DRAG_TUG_MAX_VELOCITY / velocityLength;
+          nextVx *= scale;
+          nextVy *= scale;
+        }
+
+        const proposedPosition = {
+          x: current.x + nextVx * dt,
+          y: current.y + nextVy * dt,
+        };
+        const nextPosition = clampPositionToNodeBounds(
+          node,
+          proposedPosition,
+          GRAPH_NODE_DRAG_OVERSCROLL,
+        );
+
+        if (nextPosition.x !== proposedPosition.x) {
+          nextVx = 0;
+        }
+
+        if (nextPosition.y !== proposedPosition.y) {
+          nextVy = 0;
+        }
+
+        drag.velocityById.set(nodeId, { x: nextVx, y: nextVy });
+        positions.set(nodeId, nextPosition);
+      }
+
+      drag.pending = positions;
+      return positions;
+    },
+    [floatOffsetForNodeId, liveNodeById, nodeById],
+  );
+
+  useEffect(() => {
+    if (!graphFloatEnabled) {
+      const previous = livePositionsRef.current;
+      const activeDrag = dragStateRef.current;
+      const activeDragInfluences = activeDrag?.moved
+        ? activeDrag.influenceById
+        : null;
+      const anchored = new Map<string, LivePosition>();
+
+      for (const node of liveNodes) {
+        const dragPosition =
+          activeDragInfluences?.has(node.id) ? previous.get(node.id) : null;
+        anchored.set(
+          node.id,
+          dragPosition ?? { x: node.x, y: node.y },
+        );
+      }
+
+      livePositionsRef.current = anchored;
+      syncGraphVisuals(anchored);
+      return;
+    }
+
+    let frame = 0;
+    let lastFrame = 0;
+    let mounted = true;
+    const minFrameMs = 1000 / Math.max(1, graphQuality.maxFps);
+
+    const draw = (time: number) => {
+      if (!mounted) {
+        return;
+      }
+
+      if (lastFrame && time - lastFrame < minFrameMs) {
+        frame = window.requestAnimationFrame(draw);
+        return;
+      }
+
+      lastFrame = time;
+      const seconds = time / 1000;
+      const previous = livePositionsRef.current;
+      const activeDrag = dragStateRef.current;
+      const tugPositions =
+        activeDrag && activeDrag.moved
+          ? computeDragTugPositions(activeDrag, seconds)
+          : null;
+      const next = new Map<string, LivePosition>();
+
+      for (const node of liveNodes) {
+        const dragPosition = tugPositions?.get(node.id);
+        const preservedDragPosition =
+          activeDrag?.moved && activeDrag.influenceById.has(node.id)
+            ? previous.get(node.id)
+            : null;
+
+        if (dragPosition) {
+          next.set(node.id, dragPosition);
+          continue;
+        }
+
+        if (preservedDragPosition) {
+          next.set(node.id, preservedDragPosition);
+          continue;
+        }
+
+        const nodeSeed = nodeFloatSeeds.get(node.id);
+        const clusterSeed = clusterFloatSeeds.get(node.cluster);
+
+        next.set(
+          node.id,
+          nodeSeed && clusterSeed
+            ? floatingPositionForNode(
+                node,
+                nodeSeed,
+                clusterSeed,
+                seconds,
+                graphFloatScale,
+                draggedPositions.has(node.id) ? GRAPH_NODE_DRAG_OVERSCROLL : 0,
+              )
+            : { x: node.x, y: node.y },
+        );
+      }
+
+      livePositionsRef.current = next;
+      syncGraphVisuals(next);
+      frame = window.requestAnimationFrame(draw);
+    };
+
+    frame = window.requestAnimationFrame(draw);
+
+    return () => {
+      mounted = false;
+      window.cancelAnimationFrame(frame);
+    };
+  }, [
+    clusterFloatSeeds,
+    computeDragTugPositions,
+    draggedPositions,
+    graphFloatEnabled,
+    graphFloatScale,
+    graphQuality.maxFps,
+    liveNodes,
+    nodeFloatSeeds,
+    syncGraphVisuals,
+  ]);
 
   const handleNodePointerDown = useCallback(
     (event: React.PointerEvent<SVGGElement>, node: Node) => {
@@ -2350,7 +3262,8 @@ export function ProjectGraph() {
         return;
       }
 
-      const start = screenToSvg(event.clientX, event.clientY);
+      event.stopPropagation();
+      const start = screenToGraph(event.clientX, event.clientY);
       if (!start) {
         return;
       }
@@ -2362,18 +3275,43 @@ export function ProjectGraph() {
       event.currentTarget.setPointerCapture(event.pointerId);
       // Cache an inverse CTM for fast pointer→SVG conversion during drag.
       const ctm = svgRef.current?.getScreenCTM() ?? null;
-      const liveStart = livePositionsRef.current.get(node.id) ?? node;
+      const { influenceById, depthById, tugEdges } =
+        buildDragInfluenceMap(node.id);
+      const startPositions = new Map<string, LivePosition>();
+      const startFloatOffsets = new Map<string, LivePosition>();
+      const seconds = window.performance.now() / 1000;
+
+      for (const nodeId of influenceById.keys()) {
+        const influencedNode = liveNodeById.get(nodeId) ?? nodeById.get(nodeId);
+
+        if (!influencedNode) {
+          continue;
+        }
+
+        startPositions.set(
+          nodeId,
+          livePositionsRef.current.get(nodeId) ?? influencedNode,
+        );
+        startFloatOffsets.set(nodeId, floatOffsetForNodeId(nodeId, seconds));
+      }
 
       dragStateRef.current = {
         nodeId: node.id,
         pointerId: event.pointerId,
         startSvgX: start.x,
         startSvgY: start.y,
-        startNodeX: liveStart.x,
-        startNodeY: liveStart.y,
         moved: false,
+        currentDx: 0,
+        currentDy: 0,
+        velocityById: new Map(),
+        lastTugAt: null,
         pending: null,
         inverseCtm: ctm ? ctm.inverse() : null,
+        influenceById,
+        depthById,
+        tugEdges,
+        startPositions,
+        startFloatOffsets,
       };
       perfMetricsRef.current.pointer = {
         nodeId: node.id,
@@ -2383,7 +3321,14 @@ export function ProjectGraph() {
         svgY: start.y,
       };
     },
-    [screenToSvg, setGraphDragPerfMode],
+    [
+      buildDragInfluenceMap,
+      floatOffsetForNodeId,
+      liveNodeById,
+      nodeById,
+      screenToGraph,
+      setGraphDragPerfMode,
+    ],
   );
 
   const handleNodePointerMove = useCallback(
@@ -2393,7 +3338,7 @@ export function ProjectGraph() {
         return;
       }
 
-      const current = screenToSvg(event.clientX, event.clientY);
+      const current = screenToGraph(event.clientX, event.clientY);
       if (!current) {
         return;
       }
@@ -2407,6 +3352,8 @@ export function ProjectGraph() {
 
       const dx = current.x - drag.startSvgX;
       const dy = current.y - drag.startSvgY;
+      drag.currentDx = dx;
+      drag.currentDy = dy;
 
       if (!drag.moved && Math.hypot(dx, dy) >= DRAG_THRESHOLD) {
         drag.moved = true;
@@ -2422,16 +3369,24 @@ export function ProjectGraph() {
       }
 
       event.preventDefault();
-      const nextX = clamp(drag.startNodeX + dx, NODE_RADIUS, VIEWBOX_W - NODE_RADIUS);
-      const nextY = clamp(drag.startNodeY + dy, NODE_RADIUS, VIEWBOX_H - NODE_RADIUS);
+      const nextPositions = computeDragTugPositions(
+        drag,
+        window.performance.now() / 1000,
+      );
 
       // Move the rendered SVG immediately. React state is committed on
-      // pointer-up so a render cannot reset the badge to an older frame while
+      // pointer-up so a render cannot reset the graph to an older frame while
       // the pointer is still moving.
-      applyLiveDragPosition(drag.nodeId, nextX, nextY);
-      drag.pending = { x: nextX, y: nextY };
+      applyLiveDragPositions(nextPositions);
+      drag.pending = nextPositions;
     },
-    [applyLiveDragPosition, draggingId, screenToSvg, setGraphDragPerfMode],
+    [
+      applyLiveDragPositions,
+      computeDragTugPositions,
+      draggingId,
+      screenToGraph,
+      setGraphDragPerfMode,
+    ],
   );
 
   const finishDrag = useCallback(
@@ -2443,14 +3398,36 @@ export function ProjectGraph() {
 
       const wasDrag = drag.moved;
       if (wasDrag) {
-        // Commit the final live coordinate after the drag ends.
-        const finalPosition =
-          drag.pending ?? livePositionsRef.current.get(drag.nodeId) ?? null;
-        if (finalPosition) {
-          applyLiveDragPosition(drag.nodeId, finalPosition.x, finalPosition.y);
-          commitDragPosition(drag.nodeId, finalPosition.x, finalPosition.y);
-          drag.pending = null;
+        // Commit the final tugged coordinates after the drag ends.
+        const seconds = window.performance.now() / 1000;
+        const finalPositions =
+          drag.pending ?? computeDragTugPositions(drag, seconds);
+        const committedPositions = new Map<string, LivePosition>();
+
+        for (const [nodeId, position] of finalPositions) {
+          const node = liveNodeById.get(nodeId) ?? nodeById.get(nodeId);
+
+          if (!node) {
+            continue;
+          }
+
+          committedPositions.set(
+            nodeId,
+            positionWithoutFloat(
+              node,
+              position,
+              nodeFloatSeeds.get(nodeId),
+              clusterFloatSeeds.get(node.cluster),
+              seconds,
+              graphFloatScale,
+              GRAPH_NODE_DRAG_OVERSCROLL,
+            ),
+          );
         }
+
+        applyLiveDragPositions(finalPositions);
+        commitDragPositions(committedPositions);
+        drag.pending = null;
       }
 
       try {
@@ -2466,7 +3443,18 @@ export function ProjectGraph() {
       }
       return { wasDrag };
     },
-    [applyLiveDragPosition, commitDragPosition, draggingId, setGraphDragPerfMode],
+    [
+      applyLiveDragPositions,
+      clusterFloatSeeds,
+      commitDragPositions,
+      computeDragTugPositions,
+      draggingId,
+      graphFloatScale,
+      liveNodeById,
+      nodeById,
+      nodeFloatSeeds,
+      setGraphDragPerfMode,
+    ],
   );
 
   const clusterFlows = useMemo(() => {
@@ -2845,6 +3833,38 @@ export function ProjectGraph() {
             transform: "translateZ(0)",
           }}
         >
+          <div className="absolute right-2 top-2 z-20 flex items-center gap-1 rounded-lg border border-white/10 bg-ink-950/70 p-1 font-mono text-[10px] text-zinc-300 shadow-[0_10px_30px_rgba(0,0,0,0.28)] backdrop-blur-md sm:right-3 sm:top-3">
+            <button
+              type="button"
+              className="grid h-7 w-7 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300 transition hover:border-accent/40 hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              aria-label="Zoom out"
+              title="Zoom out"
+              onClick={() => zoomGraph(-1)}
+            >
+              <ZoomOut size={14} aria-hidden="true" />
+            </button>
+            <span className="min-w-10 text-center text-[10px] tabular-nums text-zinc-400">
+              {Math.round(graphViewport.zoom * 100)}%
+            </span>
+            <button
+              type="button"
+              className="grid h-7 w-7 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300 transition hover:border-accent/40 hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              aria-label="Reset zoom"
+              title="Reset zoom"
+              onClick={resetGraphZoom}
+            >
+              <RotateCcw size={13} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="grid h-7 w-7 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300 transition hover:border-accent/40 hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              aria-label="Zoom in"
+              title="Zoom in"
+              onClick={() => zoomGraph(1)}
+            >
+              <ZoomIn size={14} aria-hidden="true" />
+            </button>
+          </div>
           <svg
             ref={svgRef}
             viewBox={`0 0 ${VIEWBOX_W} ${VIEWBOX_H}`}
@@ -2852,8 +3872,14 @@ export function ProjectGraph() {
             preserveAspectRatio="xMidYMid meet"
             aria-label="Project graph"
             role="img"
+            onWheel={handleGraphWheel}
+            onPointerDown={handleGraphPointerDown}
+            onPointerMove={handleGraphPointerMove}
+            onPointerUp={finishGraphPan}
+            onPointerCancel={finishGraphPan}
             style={{
-              touchAction: draggingId ? "none" : "auto",
+              cursor: graphPanning ? "grabbing" : "grab",
+              touchAction: draggingId || graphPanning ? "none" : "pan-y",
               userSelect: "none",
               WebkitUserSelect: "none",
             }}
@@ -2861,10 +3887,10 @@ export function ProjectGraph() {
             <defs>
               <filter
                 id="project-edge-glow"
-                x={-80}
-                y={-80}
-                width={VIEWBOX_W + 160}
-                height={VIEWBOX_H + 160}
+                x={-GRAPH_FILTER_MARGIN}
+                y={-GRAPH_FILTER_MARGIN}
+                width={VIEWBOX_W + GRAPH_FILTER_MARGIN * 2}
+                height={VIEWBOX_H + GRAPH_FILTER_MARGIN * 2}
                 filterUnits="userSpaceOnUse"
                 colorInterpolationFilters="sRGB"
               >
@@ -2876,10 +3902,10 @@ export function ProjectGraph() {
               </filter>
               <filter
                 id="project-signal-glow"
-                x={-80}
-                y={-80}
-                width={VIEWBOX_W + 160}
-                height={VIEWBOX_H + 160}
+                x={-GRAPH_FILTER_MARGIN}
+                y={-GRAPH_FILTER_MARGIN}
+                width={VIEWBOX_W + GRAPH_FILTER_MARGIN * 2}
+                height={VIEWBOX_H + GRAPH_FILTER_MARGIN * 2}
                 filterUnits="userSpaceOnUse"
                 colorInterpolationFilters="sRGB"
               >
@@ -2904,9 +3930,23 @@ export function ProjectGraph() {
                 </feMerge>
               </filter>
             </defs>
+            <rect
+              x={0}
+              y={0}
+              width={VIEWBOX_W}
+              height={VIEWBOX_H}
+              fill="transparent"
+              pointerEvents="all"
+              aria-hidden="true"
+            />
+            <g transform={graphViewportTransform(graphViewport)}>
             {edges.map((edge) => {
-              const source = liveNodeById.get(edge.source)!;
-              const target = liveNodeById.get(edge.target)!;
+              const source =
+                livePositionsRef.current.get(edge.source) ??
+                liveNodeById.get(edge.source)!;
+              const target =
+                livePositionsRef.current.get(edge.target) ??
+                liveNodeById.get(edge.target)!;
               const endpoints = getEdgeEndpoints(source, target);
               const highlight = isEdgeHighlighted(edge);
               const edgeId = edgePairKey(edge.source, edge.target);
@@ -3027,6 +4067,8 @@ export function ProjectGraph() {
                   onNodeArrive={handleTubeArrival}
                   nodeAccentById={nodeAccentById}
                   livePositionsRef={livePositionsRef}
+                  waveReservationsRef={waveReservationsRef}
+                  segmentOptionsByStartId={waveSegmentOptionsByStartId}
                   graphQuality={graphQuality}
                   onFrameMetric={recordGraphFrameMetric}
                 />
@@ -3058,15 +4100,14 @@ export function ProjectGraph() {
               const badgeStrokeOpacity = glowActive ? 0.88 : dim ? 1 : 0.42;
               const badgeStrokeWidth = glowActive ? 2 : 1;
               const visualPosition =
-                dragStateRef.current?.nodeId === node.id
-                  ? livePositionsRef.current.get(node.id) ?? node
-                  : node;
+                livePositionsRef.current.get(node.id) ?? node;
 
               return (
                 <motion.g
                   key={node.id}
                   initial={false}
                   ref={(element) => setNodeVisualRef(node.id, element)}
+                  data-project-graph-node="true"
                   role="button"
                   tabIndex={0}
                   transform={`translate(${visualPosition.x}, ${visualPosition.y})`}
@@ -3301,6 +4342,7 @@ export function ProjectGraph() {
                 </motion.g>
               );
             })}
+            </g>
           </svg>
         </motion.div>
         {graphDebugEnabled && (
@@ -3425,7 +4467,7 @@ function GraphPerformanceOverlay({
             client {pointer.clientX.toFixed(0)}, {pointer.clientY.toFixed(0)}
           </div>
           <div>
-            svg {pointer.svgX.toFixed(1)}, {pointer.svgY.toFixed(1)}
+            graph {pointer.svgX.toFixed(1)}, {pointer.svgY.toFixed(1)}
           </div>
         </div>
       )}
@@ -3474,6 +4516,98 @@ function setSvgAttr(
 
 function clamp01(value: number) {
   return Math.min(1, Math.max(0, value));
+}
+
+function positiveModulo(value: number, divisor: number) {
+  return ((value % divisor) + divisor) % divisor;
+}
+
+function waveSegmentKey(segment: Pick<TubeSegment, "startId" | "endId">) {
+  return `${segment.startId}->${segment.endId}`;
+}
+
+function cleanWaveReservations(
+  reservations: Map<string, WaveNodeReservation>,
+  time: number,
+) {
+  for (const [nodeId, reservation] of reservations) {
+    if (time - reservation.updatedAt > WAVE_RESERVATION_STALE_MS) {
+      reservations.delete(nodeId);
+    }
+  }
+}
+
+function releaseWaveReservation(
+  reservations: Map<string, WaveNodeReservation>,
+  flowId: string,
+) {
+  for (const [nodeId, reservation] of reservations) {
+    if (reservation.flowId === flowId) {
+      reservations.delete(nodeId);
+    }
+  }
+}
+
+function waveTargetIsReserved(
+  reservations: Map<string, WaveNodeReservation>,
+  nodeId: string,
+  flowId: string,
+) {
+  const reservation = reservations.get(nodeId);
+  return Boolean(reservation && reservation.flowId !== flowId);
+}
+
+function reserveWaveTarget(
+  reservations: Map<string, WaveNodeReservation>,
+  flowId: string,
+  segment: TubeSegment,
+  time: number,
+) {
+  releaseWaveReservation(reservations, flowId);
+  reservations.set(segment.endId, {
+    flowId,
+    segmentKey: waveSegmentKey(segment),
+    updatedAt: time,
+  });
+}
+
+function chooseWaveSegment(
+  flowId: string,
+  plannedSegment: TubeSegment,
+  startId: string,
+  previousNodeId: string | null,
+  segmentOptionsByStartId: Map<string, TubeSegment[]>,
+  reservations: Map<string, WaveNodeReservation>,
+) {
+  const options = segmentOptionsByStartId.get(startId) ?? [];
+
+  if (options.length === 0) {
+    return plannedSegment;
+  }
+
+  const plannedFromStart =
+    plannedSegment.startId === startId
+      ? plannedSegment
+      : options.find((option) => option.endId === plannedSegment.endId);
+  const plannedBlocked = plannedFromStart
+    ? waveTargetIsReserved(reservations, plannedFromStart.endId, flowId)
+    : true;
+
+  if (plannedFromStart && !plannedBlocked) {
+    return plannedFromStart;
+  }
+
+  const unreserved = options.filter(
+    (option) => !waveTargetIsReserved(reservations, option.endId, flowId),
+  );
+  const candidatePool = unreserved.length > 0 ? unreserved : options;
+  const forwardOptions =
+    previousNodeId && candidatePool.length > 1
+      ? candidatePool.filter((option) => option.endId !== previousNodeId)
+      : candidatePool;
+  const finalPool = forwardOptions.length > 0 ? forwardOptions : candidatePool;
+
+  return finalPool[0] ?? plannedFromStart ?? plannedSegment;
 }
 
 // Smoothstep: cubic ease that yields a soft, organic edge. Used for the
@@ -3555,7 +4689,6 @@ type TubeFlowTiming = {
   slotDurations: number[];
   routeDurations: number[];
   traversalDuration: number;
-  updatedAt: number;
 };
 
 // Fixed offsets used for the gradient stops. Long relation lines need a denser
@@ -3570,6 +4703,8 @@ function GraphTubeFlow({
   onNodeArrive,
   nodeAccentById,
   livePositionsRef,
+  waveReservationsRef,
+  segmentOptionsByStartId,
   graphQuality,
   onFrameMetric,
 }: {
@@ -3579,6 +4714,8 @@ function GraphTubeFlow({
   onNodeArrive: (arrival: NodeArrival) => void;
   nodeAccentById: Map<string, string>;
   livePositionsRef: React.MutableRefObject<Map<string, LivePosition>>;
+  waveReservationsRef: React.MutableRefObject<Map<string, WaveNodeReservation>>;
+  segmentOptionsByStartId: Map<string, TubeSegment[]>;
   graphQuality: AdaptivePerformanceProfile["graph"];
   onFrameMetric: (metric: GraphPerfMetric) => void;
 }) {
@@ -3625,7 +4762,8 @@ function GraphTubeFlow({
     let frame = 0;
     let mounted = true;
     let lastArrivalKey = "";
-    let initialSlotOffset: number | null = null;
+    let phaseOffsetSeconds: number | null = null;
+    let dynamicSegmentState: WaveDynamicSegmentState | null = null;
     timingRef.current = null;
 
     const draw = (time: number) => {
@@ -3645,7 +4783,7 @@ function GraphTubeFlow({
       let timing = timingRef.current;
       let relationCalcMs = 0;
 
-      if (!timing || time - timing.updatedAt > graphQuality.timingRecalcMs) {
+      if (!timing) {
         const relationCalcStart = window.performance.now();
         const segmentDurations = segments.map((segment) => {
           const start = positions.get(segment.startId);
@@ -3677,9 +4815,14 @@ function GraphTubeFlow({
           slotDurations,
           routeDurations,
           traversalDuration,
-          updatedAt: time,
         };
         timingRef.current = timing;
+        if (phaseOffsetSeconds === null) {
+          const startIndex = Math.floor(Math.random() * segments.length);
+          phaseOffsetSeconds = slotDurations
+            .slice(0, startIndex)
+            .reduce((sum, duration) => sum + duration, 0);
+        }
         relationCalcMs = window.performance.now() - relationCalcStart;
       }
 
@@ -3689,21 +4832,15 @@ function GraphTubeFlow({
         routeDurations,
         traversalDuration,
       } = timing;
-      if (initialSlotOffset === null) {
-        const startIndex = Math.floor(Math.random() * segments.length);
-        initialSlotOffset = slotDurations
-          .slice(0, startIndex)
-          .reduce((sum, duration) => sum + duration, 0);
-      }
       // ─── Route progression ───────────────────────────────────────────────
       // The wave travels one relation, dwells on the reached badge for the
       // ping duration, then moves to the next explicit route segment. The route
       // builder already inserts real backtrack segments only at dead ends, so
       // the renderer should not globally reverse the whole path.
       const cycleDuration = traversalDuration;
-      const offsetElapsed = elapsedSeconds + initialSlotOffset;
+      const offsetElapsed = elapsedSeconds + (phaseOffsetSeconds ?? 0);
       const cycleNumber = Math.floor(offsetElapsed / cycleDuration);
-      const cyclePos = offsetElapsed - cycleNumber * cycleDuration;
+      const cyclePos = positiveModulo(offsetElapsed, cycleDuration);
       const traversalPos = cyclePos;
       let routeIndex = 0;
       let routePos = traversalPos;
@@ -3742,28 +4879,76 @@ function GraphTubeFlow({
           linearLocalT * (1 - WAVE_BOUNCE_EASE)
         : linearLocalT;
       const localProgress = isNodeHold ? 1 : easedLocalT;
+      const plannedSegment = segments[activeIndex];
+
+      if (!plannedSegment) {
+        frameMetricRef.current({
+          frameMs: window.performance.now() - frameStart,
+          relationCalcMs,
+        });
+        frame = window.requestAnimationFrame(draw);
+        return;
+      }
+
+      cleanWaveReservations(waveReservationsRef.current, time);
+
+      const slotKey = `${cycleNumber}:${activeIndex}`;
+      if (!dynamicSegmentState || dynamicSegmentState.slotKey !== slotKey) {
+        const previousDynamicSegment = dynamicSegmentState?.segment ?? null;
+        const previousRouteSegment = activeRoute[slotIndex - 1] ?? null;
+        const isSequentialSlot = Boolean(
+          previousDynamicSegment &&
+            dynamicSegmentState?.cycleNumber === cycleNumber &&
+            dynamicSegmentState.activeIndex + 1 === activeIndex,
+        );
+        const startId = isSequentialSlot
+          ? previousDynamicSegment!.endId
+          : plannedSegment.startId;
+        const previousNodeId = isSequentialSlot
+          ? previousDynamicSegment!.startId
+          : previousRouteSegment?.endId === plannedSegment.startId
+            ? previousRouteSegment.startId
+            : null;
+        const segment = chooseWaveSegment(
+          flow.id,
+          plannedSegment,
+          startId,
+          previousNodeId,
+          segmentOptionsByStartId,
+          waveReservationsRef.current,
+        );
+
+        dynamicSegmentState = {
+          slotKey,
+          cycleNumber,
+          activeIndex,
+          segment,
+        };
+      }
+
+      const seg = dynamicSegmentState.segment;
+      reserveWaveTarget(waveReservationsRef.current, flow.id, seg, time);
 
       // Arrival ping fires at the explicit segment destination. Backtracking
       // segments are stored with reversed start/end ids, so they naturally ping
       // the node the wave really returns to.
       const arrivalThreshold = isNodeHold;
-      const arrivalSegment = segments[activeIndex];
-      const arrivalNodeId = arrivalSegment.endId;
-      const arrivalKey = `${cycleNumber}-${activeIndex}`;
+      const arrivalNodeId = seg.endId;
+      const arrivalKey = `${cycleNumber}-${activeIndex}-${waveSegmentKey(seg)}`;
       if (arrivalThreshold && arrivalKey !== lastArrivalKey) {
         lastArrivalKey = arrivalKey;
         onArriveRef.current({
           nodeId: arrivalNodeId,
-          color: nodeAccentByIdRef.current.get(arrivalNodeId) ?? arrivalSegment.edge.color,
+          color: nodeAccentByIdRef.current.get(arrivalNodeId) ?? seg.edge.color,
         });
       }
 
-      const seg = segments[activeIndex];
       const refs = flowRefs.current;
       const startNode = positions.get(seg.startId);
       const endNode = positions.get(seg.endId);
 
       if (!startNode || !endNode) {
+        releaseWaveReservation(waveReservationsRef.current, flow.id);
         for (const stop of refs.stops) {
           setSvgAttr(stop, "stop-opacity", 0);
         }
@@ -3787,6 +4972,8 @@ function GraphTubeFlow({
       setSvgAttr(refs.gradient, "y1", endpoints.y1);
       setSvgAttr(refs.gradient, "x2", endpoints.x2);
       setSvgAttr(refs.gradient, "y2", endpoints.y2);
+      setSvgAttr(refs.tube, "data-wave-target", seg.endId);
+      setSvgAttr(refs.channel, "data-wave-target", seg.endId);
 
       const center = localProgress;
       const visible = center >= 0 && center <= 1;
@@ -3875,18 +5062,21 @@ function GraphTubeFlow({
 
     return () => {
       mounted = false;
+      releaseWaveReservation(waveReservationsRef.current, flow.id);
       window.cancelAnimationFrame(frame);
     };
   }, [
     flow.delay,
+    flow.id,
     livePositionsRef,
     nodeHoldDuration,
-    graphQuality.timingRecalcMs,
     reduced,
     routeStartByIndex,
     routes,
     segmentDuration,
+    segmentOptionsByStartId,
     segments,
+    waveReservationsRef,
   ]);
 
   if (segments.length === 0) {
