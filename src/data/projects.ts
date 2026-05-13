@@ -36,10 +36,17 @@ export type Project = {
   tech: string[];
   bullets: string[];
   metrics: string[];
+  stats: ProjectStat[];
   relations: ProjectRelation[];
   github: string;
   liveDemo?: string;
   icon: LucideIcon;
+};
+
+export type ProjectStat = {
+  label: string;
+  value: string;
+  detail?: string;
 };
 
 export type ProjectRelation =
@@ -71,7 +78,7 @@ export type ProjectRelation =
   | "Document Generation"
   | "Game Development";
 
-type ProjectBase = Omit<Project, "metrics" | "relations">;
+type ProjectBase = Omit<Project, "metrics" | "relations" | "stats">;
 
 const GH = "https://github.com/Omar-Alkhamissi";
 const repo = (name: string) => `${GH}/${name}`;
@@ -88,20 +95,22 @@ const rawProjects: ProjectBase[] = [
       "Engineered a 5-factor weighted compatibility algorithm scoring users on skills, tech stack, interests, location, and intent into a normalized 0–100% match across 14 authenticated pages and 6 MongoDB models.",
       "Implemented JWT auth with bcryptjs (salt=10), middleware-based role checks, and React Context token persistence; protected routes via compound DB indexes for sub-100ms mutual-match lookups.",
       "Integrated Stripe Subscription API ($5/month) with idempotent checkout sessions and metadata linking, gating contact info behind verified payment status; built a 6-suite Jest + Supertest harness using mongodb-memory-server for isolated integration tests.",
+      "Owned database-facing integration concerns by aligning compatibility scoring, auth persistence, payment gating, and upload handling around the same user/match model.",
     ],
     github: repo("Debug-My-Heart"),
   },
   {
     title: "Expression Evaluator",
     icon: Calculator,
-    blurb: "5-stage C++20 tokenizer → parser → RPN evaluator",
+    blurb: "C++20 coursework compiler pipeline — tokenizer → parser → RPN",
     description:
-      "A modular expression evaluation pipeline (7,237 LOC, 41 files) separating tokenization, parsing, RPN conversion, and evaluation into independent C++20 components with a clean facade.",
+      "A coursework-framed expression evaluation pipeline (7,237 LOC, 41 files) separating tokenization, parsing, RPN conversion, and evaluation into independent C++20 components with a clean facade.",
     tech: ["C++20", "STL", "shared_ptr", "RAII"],
     bullets: [
       "Architected a 5-stage pipeline (tokens → tokenizer → parser → RPN → evaluator) with each stage as an independent, reusable component across 41 files and 7,237 lines of C++20.",
       "Designed a type-safe token hierarchy (Token base → Operand/Operator subclasses) with shared_ptr RAII, supporting 10+ token types without runtime casting or manual memory management.",
       "Implemented Reverse Polish Notation conversion with operator precedence and parenthesis resolution, enabling correct evaluation of arbitrarily nested expressions behind a single evaluate(string) facade call.",
+      "Kept parser/evaluator boundaries testable by exposing a single facade while preserving independent tokenization, parsing, conversion, and evaluation stages.",
     ],
     github: repo("Programming"),
   },
@@ -116,6 +125,7 @@ const rawProjects: ProjectBase[] = [
       "Designed a 4-layer N-tier architecture across 28 files with clean layer isolation and a generic IRepository<T> interface eliminating CRUD duplication across 4 entity types.",
       "Implemented optimistic concurrency detection using UpdateStatus return codes (-2 = stale data) preventing silent overwrites without pessimistic table locks.",
       "Built DAO and ViewModel test coverage around the helpdesk data layer, plus report endpoints and generated PDF outputs for call and employee reporting.",
+      "Handled binary image/file payloads through ViewModel and DAO paths so reporting and employee records stayed within the same layered contract.",
     ],
     github: repo("EmployeePortal"),
   },
@@ -130,6 +140,7 @@ const rawProjects: ProjectBase[] = [
       "Architected a 3-tier gRPC microservice system (.NET 9) with bidirectional streaming RPCs and a deterministic daily word seeded by Random(YYYYMMDD).",
       "Implemented a two-pass Wordle evaluation algorithm — first marks exact positions and builds a frequency map, second checks wrong-position letters against remaining frequency — correctly handling duplicate letters without over-marking.",
       "Designed thread-safe stats persistence using a named System.Threading.Mutex protecting game_stats.json from concurrent writes across simultaneous multi-player completions.",
+      "Separated word generation, gameplay orchestration, and client rendering so each gRPC service can evolve independently while sharing Protobuf contracts.",
     ],
     github: repo("Programming"),
   },
@@ -144,6 +155,7 @@ const rawProjects: ProjectBase[] = [
       "Architected an EF Core Code-First model with 5 relational tables, FK constraints, and SQL Server LocalDB; generated migrations tracking schema evolution across iterations.",
       "Implemented RFC2898DeriveBytes password hashing (10,000 iterations, 64-byte salt) and JWT generation with symmetric HMAC-SHA256 signing, configurable via appsettings.json.",
       "Designed an async transaction (BeginTransactionAsync → CommitAsync → RollbackAsync) atomically creating a Tray, inserting line items, and computing 9 nutrition totals in one rollback-safe operation.",
+      "Connected the Vue/Quasar ordering UI to Swagger-documented APIs, keeping menu browsing, tray assembly, and nutrition feedback aligned with backend transactions.",
     ],
     github: repo("FastFoodOrdering"),
   },
@@ -158,6 +170,7 @@ const rawProjects: ProjectBase[] = [
       "Architected real-time messaging using Socket.IO 4.8 with room-based isolation, per-user color assignment from a 75-entry palette with Set-based deduplication, and automatic color release on disconnect.",
       "Engineered a message mutation system with /edit and /del slash-commands, soft-delete flags (deletedAt), edit timestamps, and conditional rendering for mutation metadata.",
       "Built a server-side Room class managing message log, typing user set, and member list — handling edge cases like multi-user typing pluralization (\"X and Y are typing...\") and day-boundary separators via date-fns.",
+      "Preserved room state on the server instead of trusting client-only history, giving reconnects, message edits, and typing presence one authoritative source.",
     ],
     github: repo("Programming"),
   },
@@ -172,6 +185,7 @@ const rawProjects: ProjectBase[] = [
       "Engineered a data ingestion pipeline consuming a live government travel advisory API, normalizing timestamps, left-joining 118 ISO 3166-1 countries, and upserting merged records into 3 MongoDB collections.",
       "Built a repository abstraction layer (db.js) with parameterized queries and projection optimization — advisory text excluded from list views, included in detail views — to reduce payload size.",
       "Designed a POST /db/refresh endpoint triggering full database drop/recreate for daily synchronization, with NULLIF-safe aggregations and optional chaining preventing null reference errors on empty data.",
+      "Separated refresh-time ETL from read-time endpoints so the UI can browse stable advisory snapshots while updates rebuild the backing collections.",
     ],
     github: repo("Programming"),
   },
@@ -186,6 +200,7 @@ const rawProjects: ProjectBase[] = [
       "Designed a multi-calendar system with 5 calendar implementations using Julian Day Number as the universal interchange hub, enabling O(1) cross-calendar conversion without N×N direct converters.",
       "Implemented bidirectional conversion functions (gregorian_to_jd, jd_to_gregorian, hebrew_to_jd, etc.) incorporating astronomical algorithms for historical and religious calendar systems.",
       "Developed a 200+ test case suite validating round-trip conversions (Gregorian → JD → Gregorian), leap year edge cases, and religious calendar boundary conditions.",
+      "Encapsulated calendar-specific leap-year and month rules behind shared date interfaces so adding calendar systems does not disturb existing conversions.",
     ],
     github: repo("Khronos"),
   },
@@ -200,6 +215,7 @@ const rawProjects: ProjectBase[] = [
       "Built a multi-pass recursive descent tokenizer handling two-char element symbols, multi-digit subscripts, parenthetical groups with scalar multipliers, and duplicate element aggregation.",
       "Implemented a 5-rule validation pipeline (null safety → symbol lookup → parenthesis matching → nesting rejection → subscript positioning) with descriptive errors per rule failure.",
       "Integrated CsvHelper 33.1 with attribute-driven field mapping to lazy-load 118 elements, cached via a double-check singleton, and shipped a library/CLI split with /f:filepath batch processing.",
+      "Kept formula parsing reusable by separating library behavior from CLI batch mode, letting the same parser handle interactive formulas and file-driven workloads.",
     ],
     github: repo("Programming"),
   },
@@ -214,6 +230,7 @@ const rawProjects: ProjectBase[] = [
       "Implemented a 4-state POS state machine (TakingOrder → Preparing → Payment → Pickup) using IOrderState polymorphic objects encapsulating transitions inside a CoffeeShop context class.",
       "Applied the Bridge pattern decoupling Drink abstraction from IBrewer implementations (AutomaticMachine, ManualSteamer), enabling runtime brew selection without modifying drink classes.",
       "Designed a recursive Decorator hierarchy stacking Cost() and Description() aggregation across MilkDecorator, SyrupDecorator, and WhipDecorator to support 10+ drink combinations.",
+      "Kept pattern examples cohesive by making state transitions, brew behavior, and add-on pricing cooperate inside one POS flow instead of isolated demos.",
     ],
     github: repo("CoffeeShopPOS"),
   },
@@ -228,6 +245,7 @@ const rawProjects: ProjectBase[] = [
       "Architected a Mediator (DrawingMediator, 190 LOC) coordinating multi-user sessions, parsing 3 shape types with coordinate validation and routing state updates without direct user coupling.",
       "Implemented Observer with sender-exclusion logic (ReferenceEquals) ensuring shape additions broadcast to all observers except the originating user.",
       "Designed a Memento-based undo/redo system (CanvasCaretaker + CanvasMemento) maintaining immutable snapshots with CanUndo/CanRedo guards and informative diff messages identifying the reverted shape.",
+      "Separated command routing, broadcast delivery, and history snapshots so collaboration behavior stays understandable under multi-user edits.",
     ],
     github: repo("CollaborativeDrawingApp"),
   },
@@ -242,6 +260,7 @@ const rawProjects: ProjectBase[] = [
       "Implemented 3-rotor signal propagation with forwardMap/backwardMap permutation arrays and O(1) character translation via modulo arithmetic ((idx + offset) % 26).",
       "Engineered odometer-style rotor stepping with automatic carry propagation (fast → medium → slow) and bidirectional signal flow (keyboard → rotors → reflector → rotors → lamp).",
       "Rendered an interactive GUI with 52 dynamically positioned elements, real-time key/lamp color feedback, ImageIO-loaded background assets, and Observer pattern for decoupled view updates.",
+      "Mapped cipher logic separately from Swing rendering so rotor stepping and lamp feedback remain testable outside the visual shell.",
     ],
     github: repo("EnigmaProject"),
   },
@@ -256,6 +275,7 @@ const rawProjects: ProjectBase[] = [
       "Designed a normalized 8-table schema with 25 integrity constraints (PK, FK, UNIQUE, CHECK), composite key on OrderDetails, and self-referential employee hierarchy via ReportsTo.",
       "Engineered three scalar UDFs returning MONEY/INT with NULLIF-safe division, aggregating SUM(UnitPrice × Qty × (1−Discount)) across joins for customer and global order averages.",
       "Developed a stored procedure with nested CURSOR loops (outer: orders DESC by total, inner: line-item aggregation) and locale-aware FORMAT() output for report-style printing.",
+      "Encoded business rules through constraints, UDFs, and stored procedure output so reports depend on relational guarantees rather than application-side cleanup.",
     ],
     github: repo("OrderManagementSystem"),
   },
@@ -270,6 +290,7 @@ const rawProjects: ProjectBase[] = [
       "Engineered a 14-node binary decision tree evaluating 9 medical attributes (clump thickness, cell uniformity, bare nuclei, etc.) classifying samples as benign or malignant via recursive lambda traversal.",
       "Implemented a BinaryDecisionTree<T> template class supporting const/non-const lambda logic functions, enabling type-safe branch predicates without virtual function overhead.",
       "Built a CSV parsing pipeline with missing-value handling (\"?\" → 0), 1–10 range validation, and summary statistics output for total/benign/malignant/invalid counts.",
+      "Kept classification transparent by making every branch predicate explicit, giving reviewers a readable path from attributes to diagnosis.",
     ],
     github: repo("Patient-Diagnosis"),
   },
@@ -284,6 +305,7 @@ const rawProjects: ProjectBase[] = [
       "Developed a cross-platform mobile app (React Native 0.83 + Expo 55) deployed as an installable 169 MB Android .apk; integrated Firebase Firestore with async/await error handling on all 5 CRUD operations.",
       "Implemented client-side immutable sort ([...list].sort()) on the Firestore document list by price, using optional chaining (?.list) for safe null access on empty documents.",
       "Designed a SafeAreaView layout with Flexbox primitives and Expo status bar management for consistent rendering across notched Android and iOS devices.",
+      "Packaged the project as a real APK artifact, proving the Firestore-backed flow works beyond simulator-only development.",
     ],
     github: repo("Programming"),
   },
@@ -298,6 +320,7 @@ const rawProjects: ProjectBase[] = [
       "Computes mean, median, variance, standard deviation, min/max range, modes, and frequency tables from whitespace-separated numeric datasets.",
       "Implements Newcomb-Benford leading-digit analysis with expected-vs-actual percentages, ASCII bar output, specialized variance, and relationship-strength classification.",
       "Supports file input, interactive input, --help, and --skipbad handling for invalid/NaN/INF/non-positive values without silently corrupting the analysis.",
+      "Keeps the statistical pipeline honest by isolating validation modes from analysis output, so skipped records are intentional rather than hidden.",
     ],
     github: repo("nbstats"),
   },
@@ -312,6 +335,7 @@ const rawProjects: ProjectBase[] = [
       "Implements factory- and builder-style abstractions so multiple document formats can be created from the same instruction script.",
       "Supports reusable document elements like headers, images, tables, and lists instead of hardcoding output strings.",
       "Shows design-pattern fluency in a library-oriented context rather than a UI-heavy one.",
+      "Separates document construction from output format, letting the same scripted content produce HTML or Markdown without duplicated assembly logic.",
     ],
     github: repo("DocumentFactory"),
   },
@@ -326,6 +350,7 @@ const rawProjects: ProjectBase[] = [
       "Reads the same domain data through CSV, JSON, and XML pipelines instead of binding the program to one import format.",
       "Separates data modeling and statistical calculation into distinct code paths instead of mixing parsing with reporting.",
       "Works well as a practical data-processing project outside the usual web-app frame.",
+      "Normalizes city records after import so statistics stay format-agnostic across CSV, JSON, and XML sources.",
     ],
     github: repo("Programming"),
   },
@@ -340,6 +365,7 @@ const rawProjects: ProjectBase[] = [
       "Queries structured XML with XPath to surface metrics like inflation, unemployment, and broader macroeconomic indicators.",
       "Stores user-selected year ranges so the application behaves more like a reusable reporting tool than a one-off parser.",
       "Adds another data-oriented desktop-style project with a different flavor from the SQL work.",
+      "Combines persisted year filters with XPath queries so repeated reports can reuse user context instead of restarting from raw XML each run.",
     ],
     github: repo("GlobalEconomics"),
   },
@@ -354,6 +380,7 @@ const rawProjects: ProjectBase[] = [
       "Defines multiple stacking strategies that can be swapped without changing the heavy-object model itself.",
       "Uses a flyweight factory to cache and reuse strategy instances rather than constructing them repeatedly.",
       "Rounds out the design-pattern work with iterator-based collection traversal on top of the strategy logic.",
+      "Keeps stacking rules open for extension by adding strategies through new policy classes rather than branching through the object model.",
     ],
     github: repo("Programming"),
   },
@@ -368,6 +395,7 @@ const rawProjects: ProjectBase[] = [
       "Builds the project around a custom priority queue rather than treating the queue as a black-box library detail.",
       "Models patients and ailments as domain entities so the data structure is exercised in a meaningful use case.",
       "Includes focused tests for the queue and its supporting classes.",
+      "Uses the triage domain to exercise ordering behavior under realistic severity comparisons instead of abstract queue-only examples.",
     ],
     github: repo("Triage"),
   },
@@ -382,6 +410,7 @@ const rawProjects: ProjectBase[] = [
       "Frames the work around ETL stages instead of just schema definition and seeded records.",
       "Shows data-engineering awareness by separating transformation logic from source-side structure.",
       "Adds a warehouse-oriented project to complement the OLTP-style database systems in the portfolio.",
+      "Keeps source loading and transformations distinct, making the script easier to reason about as a repeatable warehouse workflow.",
     ],
     github: repo("DataWarehouseETLPipeline"),
   },
@@ -396,6 +425,7 @@ const rawProjects: ProjectBase[] = [
       "Defines a domain model around flights and maintenance rather than repeating a generic storefront schema.",
       "Includes structure and sample data so the database is demonstrable out of the box.",
       "Useful as a clean relational-modeling example in a logistics-focused scenario.",
+      "Captures operational relationships between drones, flights, and maintenance so the schema reads like a logistics system rather than a table exercise.",
     ],
     github: repo("DroneManagementSystem"),
   },
@@ -410,6 +440,7 @@ const rawProjects: ProjectBase[] = [
       "Models employee records, departments, and payroll relationships in a domain most reviewers can understand immediately.",
       "Broadens the SQL portfolio beyond order processing and warehouse-style examples.",
       "Useful as a backend/data project even without a web frontend attached to it.",
+      "Uses PL/pgSQL-flavored schema work to show portability beyond SQL Server while staying grounded in HR/payroll relationships.",
     ],
     github: repo("EmployeeManagementSystem"),
   },
@@ -424,6 +455,7 @@ const rawProjects: ProjectBase[] = [
       "Centers the app on local SQLite persistence rather than making everything depend on a remote backend.",
       "Uses Expo media tooling to attach cover images and make the app feel more complete than a bare CRUD list.",
       "Complements the other mobile work with a different use case and persistence strategy.",
+      "Keeps the reading catalog local-first, making add/edit flows responsive without requiring a network service for basic use.",
     ],
     github: repo("Programming"),
   },
@@ -438,6 +470,7 @@ const rawProjects: ProjectBase[] = [
       "Validates course and evaluation data against a schema instead of trusting arbitrary JSON input.",
       "Implements weighted grade calculations in a reusable model rather than hardcoding a single report path.",
       "Works well as a small but grounded utility project with an obvious real-world use case.",
+      "Separates schema validation from calculation so corrupted course files fail early before weighted-grade logic runs.",
     ],
     github: repo("CourseGradeTracker"),
   },
@@ -452,6 +485,7 @@ const rawProjects: ProjectBase[] = [
       "Implements player movement, collisions, scoring, and game-over behavior in a classic arcade-style loop.",
       "Uses scrolling parallax backgrounds to make a small prototype feel more polished and visually alive.",
       "Shows C# experience in a completely different context from business apps and data tools.",
+      "Combines physics, collision outcomes, scoring, and background motion into a complete gameplay loop rather than a static movement demo.",
     ],
     github: repo("Programming"),
   },
@@ -466,6 +500,7 @@ const rawProjects: ProjectBase[] = [
       "Uses inheritance across business, retail, and preferred customer categories instead of flattening all cases into one catch-all class.",
       "Overrides incentives() so preferred customers layer cashback behavior on top of retail purchase incentives.",
       "Separates domain classes from the test harness so the object model is still clear on its own.",
+      "Uses a tester harness to exercise tier-specific incentive behavior so inheritance choices are visible through concrete purchase scenarios.",
     ],
     github: repo("Customerdatastorage"),
   },
@@ -479,6 +514,8 @@ const rawProjects: ProjectBase[] = [
     bullets: [
       "Applies relational thinking to ancestry and relationship data rather than another generic commerce domain.",
       "Adds variety to the database work by modeling a non-business, relationship-heavy problem space.",
+      "Focuses on relationship cardinality and lookup paths that mirror family-history questions instead of simple CRUD fields.",
+      "Works as a concise SQL modeling artifact for discussing entity design, relationship constraints, and domain-specific query needs.",
     ],
     github: repo("FamilyGenealogy"),
   },
@@ -493,6 +530,7 @@ const rawProjects: ProjectBase[] = [
       "Separates backend and frontend concerns into distinct application areas, with 5 ASP.NET controllers and a Quasar SPA storefront.",
       "Tracks schema evolution through EF Core migrations covering customer, order, branch, brand, and product domain changes.",
       "Adds another commerce-focused full-stack build with a different product domain and structure from Fast Food Ordering.",
+      "Uses the fragrance domain to demonstrate reusable commerce architecture without simply duplicating the fast-food ordering flow.",
     ],
     github: repo("FragranceEcommerce"),
   },
@@ -507,6 +545,7 @@ const rawProjects: ProjectBase[] = [
       "Includes a dedicated negative-value exception instead of relying only on generic runtime failures.",
       "Separates student data, payable logic, and the app entrypoint across focused Java classes.",
       "Works as a compact Java utility project with a clear domain problem and validation story.",
+      "Surfaces a wide interest-rate option set and CSL/OSL outputs, giving the small Java app enough domain behavior to test validation and calculations.",
     ],
     github: repo("StudentLoanApp"),
   },
@@ -514,7 +553,8 @@ const rawProjects: ProjectBase[] = [
 
 const projectInsights: Record<
   string,
-  Pick<Project, "metrics" | "relations">
+  Pick<Project, "metrics" | "relations"> &
+    Partial<Pick<Project, "stats">>
 > = {
   "Debug My Heart": {
     metrics: [
@@ -542,11 +582,48 @@ const projectInsights: Record<
   },
   "Expression Evaluator": {
     metrics: [
+      "April 2024 resume timeline",
+      "Coursework/compiler pipeline context",
       "7,237 LOC",
       "41 C++ files",
       "5-stage tokenizer/parser/RPN/evaluator pipeline",
       "10+ token types",
       "shared_ptr + RAII memory handling",
+      "Operator precedence + parenthesis handling",
+      "Arbitrarily nested expression support",
+      "Stack-based evaluation flow",
+    ],
+    stats: [
+      {
+        label: "Timeline",
+        value: "April 2024",
+        detail: "CareerForge resume source",
+      },
+      {
+        label: "Scope",
+        value: "7,237 LOC",
+        detail: "Expression pipeline",
+      },
+      {
+        label: "Codebase",
+        value: "41 files",
+        detail: "C++20 implementation",
+      },
+      {
+        label: "Pipeline",
+        value: "5 stages",
+        detail: "Tokens to evaluator facade",
+      },
+      {
+        label: "Types",
+        value: "10+ tokens",
+        detail: "Operand/operator hierarchy",
+      },
+      {
+        label: "Memory",
+        value: "RAII",
+        detail: "shared_ptr, no manual ownership",
+      },
     ],
     relations: [
       "Algorithms",
@@ -934,6 +1011,7 @@ export const projects: Project[] = rawProjects.map((project) => {
   return {
     ...project,
     metrics: insight?.metrics ?? [],
+    stats: insight?.stats ?? [],
     relations: insight?.relations ?? [],
   };
 });

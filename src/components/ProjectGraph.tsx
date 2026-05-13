@@ -3,6 +3,7 @@ import { motion, useReducedMotion } from "framer-motion";
 import {
   ExternalLink,
   Github,
+  Home,
   MousePointer2,
   Pin,
   RotateCcw,
@@ -282,6 +283,7 @@ const GRAPH_ZOOM_MIN = 0.45;
 const GRAPH_ZOOM_MAX = 1.85;
 const GRAPH_ZOOM_STEP = 0.18;
 const GRAPH_PAN_OVERSCROLL = 1.25;
+const PROJECT_RESET_DURATION_MS = 650;
 const GRAPH_NODE_DRAG_OVERSCROLL = Math.max(VIEWBOX_W, VIEWBOX_H) * 4;
 const GRAPH_FILTER_MARGIN = GRAPH_NODE_DRAG_OVERSCROLL + 180;
 const DRAG_TUG_MAX_DEPTH = 3;
@@ -2161,6 +2163,261 @@ function whyProjectMatters(project: Project) {
   return copy[focus];
 }
 
+const focusLabels: Record<ProjectFocus, string> = {
+  web: "Product",
+  mobile: "Mobile",
+  backend: "Backend",
+  data: "Data",
+  systems: "Systems",
+  patterns: "Architecture",
+  java: "OOP Model",
+};
+
+function projectLogistics(project: Project): Project["stats"] {
+  const explicitStats = project.stats.slice(0, 5);
+  if (explicitStats.length >= 4) {
+    return explicitStats;
+  }
+
+  const usedMetrics = new Set<string>();
+  const scopeMetric = pickMetric(project.metrics, [
+    /loc|files?|source classes?|pages?|components?|controllers?|routes?|endpoints?/i,
+    /models?|tables?|collections?|migrations?|services?|formats?|test cases?/i,
+  ]);
+  if (scopeMetric) {
+    usedMetrics.add(scopeMetric);
+  }
+
+  const designMetric = pickMetric(project.metrics, [
+    /architecture|layer|tier|pipeline|hierarchy|patterns?|state|bridge/i,
+    /decorator|observer|memento|factory|strategy|algorithm|parser|recursive/i,
+  ], usedMetrics);
+  if (designMetric) {
+    usedMetrics.add(designMetric);
+  }
+
+  const proofMetric = pickMetric(project.metrics, [
+    /test|suite|xunit|jest|supertest|google test|validation|swagger/i,
+    /auth|jwt|bcrypt|pbkdf2|stripe|payment|transaction|mutex|report|pdf/i,
+  ], usedMetrics);
+
+  const stats: Project["stats"] = [
+    {
+      label: "Focus",
+      value: focusLabels[projectFocus(project)],
+      detail: project.relations.slice(0, 2).join(" + ") || "Primary angle",
+    },
+    stackStat(project),
+  ];
+
+  if (scopeMetric) {
+    stats.push(metricSnapshot(scopeMetric, "Scope"));
+  }
+
+  if (designMetric) {
+    stats.push(metricSnapshot(designMetric, "Design"));
+  }
+
+  if (proofMetric) {
+    stats.push(metricSnapshot(proofMetric, "Proof"));
+  }
+
+  stats.push({
+    label: "Graph",
+    value: `${project.relations.length} links`,
+    detail: project.relations.slice(0, 3).join(", ") || "Standalone signal",
+  });
+
+  return dedupeStats([...explicitStats, ...stats]).slice(0, 5);
+}
+
+function pickMetric(
+  metrics: string[],
+  patterns: RegExp[],
+  excluded: Set<string> = new Set(),
+) {
+  return metrics.find(
+    (metric) =>
+      !excluded.has(metric) && patterns.some((pattern) => pattern.test(metric)),
+  );
+}
+
+function stackStat(project: Project): Project["stats"][number] {
+  const stack = uniqueCompact(project.tech);
+  const value = stack.slice(0, 2).join(" + ") || "Core stack";
+  const detail = stack.slice(2, 5).join(", ");
+
+  return {
+    label: "Stack",
+    value,
+    detail: detail || "Primary implementation tools",
+  };
+}
+
+function uniqueCompact(values: string[]) {
+  const seen = new Set<string>();
+
+  return values.filter((value) => {
+    const key = value.toLowerCase().replace(/[^a-z0-9+#.]/g, "");
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function metricSnapshot(metric: string, label: string): Project["stats"][number] {
+  const lower = metric.toLowerCase();
+  const number = metric.match(/\d[\d,.]*\+?/)?.[0];
+
+  if (number && /loc/.test(lower)) {
+    return { label, value: `${number} LOC`, detail: "Measured code scope" };
+  }
+
+  if (number && /files?/.test(lower)) {
+    return { label, value: `${number} files`, detail: "Codebase size" };
+  }
+
+  if (number && /source classes?|classes/.test(lower)) {
+    return { label, value: `${number} classes`, detail: compactMetricDetail(metric) };
+  }
+
+  if (number && /pages?|screens?|components?/.test(lower)) {
+    return { label, value: `${number} UI pieces`, detail: compactMetricDetail(metric) };
+  }
+
+  if (number && /routes?|endpoints?|controllers?/.test(lower)) {
+    return { label, value: `${number} API pieces`, detail: compactMetricDetail(metric) };
+  }
+
+  if (number && /models?|tables?|collections?/.test(lower)) {
+    return { label, value: `${number} data entities`, detail: compactMetricDetail(metric) };
+  }
+
+  if (number && /tests?|suites?|test cases?/.test(lower)) {
+    return { label, value: `${number} tests`, detail: compactMetricDetail(metric) };
+  }
+
+  if (number && /services?|tier/.test(lower)) {
+    return { label, value: `${number} services`, detail: compactMetricDetail(metric) };
+  }
+
+  if (number && /patterns?/.test(lower)) {
+    return { label, value: `${number} patterns`, detail: compactMetricDetail(metric) };
+  }
+
+  return {
+    label,
+    value: metricSnapshotValue(metric),
+    detail: trimRepeatedDetail(
+      compactMetricDetail(metric),
+      metricSnapshotValue(metric),
+    ),
+  };
+}
+
+function metricSnapshotValue(metric: string) {
+  if (/jwt|bcrypt|pbkdf2|rfc2898/i.test(metric)) return "Auth flow";
+  if (/stripe|payment|checkout|subscription/i.test(metric)) return "Payments";
+  if (/socket\.io|typing|real-time|bidirectional/i.test(metric)) return "Realtime";
+  if (/grpc|protobuf|http\/2/i.test(metric)) return "gRPC";
+  if (/csv|json|xml|xpath/i.test(metric)) return "Data formats";
+  if (/state|bridge|decorator|observer|memento|factory|strategy/i.test(metric)) {
+    return "Patterns";
+  }
+  if (/hierarchy/i.test(metric)) return "Hierarchy";
+  if (/tester|harness/i.test(metric)) return "Test harness";
+  if (/algorithm|parser|rpn|recursive|decision tree/i.test(metric)) {
+    return "Algorithmic";
+  }
+
+  const number = metric.match(/\d[\d,.]*\+?/)?.[0];
+  if (number) {
+    return number;
+  }
+
+  return metric.split(/\s+/).slice(0, 2).join(" ");
+}
+
+function compactMetricDetail(metric: string) {
+  return metric
+    .replace(/^\d[\d,.]*\+?\s*/, "")
+    .replace(/\b(Java|C#|C\+\+|React|Vue|Node\.js|SQL|\.NET)\b\s*/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/^[-–—:, ]+/, "")
+    .trim() || metric;
+}
+
+function trimRepeatedDetail(detail: string, value: string) {
+  const normalizedDetail = detail.toLowerCase();
+  const normalizedValue = value.toLowerCase();
+
+  if (!normalizedDetail.startsWith(normalizedValue)) {
+    return detail;
+  }
+
+  return detail.slice(value.length).replace(/^[-–—:, ]+/, "").trim() || "Implementation detail";
+}
+
+function dedupeStats(stats: Project["stats"]) {
+  const seen = new Set<string>();
+
+  return stats.filter((stat) => {
+    const key = `${stat.label}:${stat.value}:${stat.detail ?? ""}`
+      .toLowerCase()
+      .replace(/[^a-z0-9+#.]/g, "");
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function projectFeatureItems(project: Project) {
+  const features = [...project.bullets];
+  const fallbacks = projectFeatureFallbacks(project);
+
+  for (const fallback of fallbacks) {
+    if (features.length >= 4) {
+      break;
+    }
+
+    if (!features.some((feature) => feature === fallback)) {
+      features.push(fallback);
+    }
+  }
+
+  return features.slice(0, 4);
+}
+
+function projectFeatureFallbacks(project: Project) {
+  const focus = focusLabels[projectFocus(project)].toLowerCase();
+  const implementationMetric =
+    project.metrics.find(
+      (metric) => !/\b(loc|timeline|context|files?)\b/i.test(metric),
+    ) ?? project.metrics[0];
+  const relationSummary = project.relations.slice(0, 3).join(", ");
+  const stackSummary = project.tech.slice(0, 4).join(", ");
+  const metricDetail = implementationMetric
+    ? `${implementationMetric.charAt(0).toLowerCase()}${implementationMetric.slice(1)}`
+    : null;
+
+  return [
+    metricDetail
+      ? `Highlights ${metricDetail} as a concrete ${focus} implementation detail reviewers can inspect beyond the headline stack.`
+      : `Keeps the ${focus} work grounded in a focused ${stackSummary || "software"} implementation with a clear review surface.`,
+    relationSummary
+      ? `Connects to portfolio themes around ${relationSummary}, helping reviewers compare it against related work.`
+      : `Keeps the implementation scoped around ${stackSummary || "the core stack"} rather than broad, unfocused tooling.`,
+    `Shows handoff value through clear project framing, concrete stack choices, and reviewer-readable engineering signals.`,
+  ];
+}
+
 export function ProjectGraph() {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [pinnedId, setPinnedId] = useState<string | null>(null);
@@ -2220,7 +2477,9 @@ export function ProjectGraph() {
   const waveReservationsRef = useRef<Map<string, WaveNodeReservation>>(new Map());
   const graphFrameRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const graphViewportGroupRef = useRef<SVGGElement | null>(null);
   const graphViewportRef = useRef<GraphViewport>(graphViewport);
+  const resetAnimationFrameRef = useRef<number | null>(null);
   const perfMetricsRef = useRef<GraphPerfMetrics>({
     waveFrameMs: 0,
     relationCalcMs: 0,
@@ -2323,14 +2582,22 @@ export function ProjectGraph() {
     announceGraphDragPerformance(active);
   }, []);
 
+  const cancelProjectResetAnimation = useCallback(() => {
+    if (resetAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(resetAnimationFrameRef.current);
+      resetAnimationFrameRef.current = null;
+    }
+  }, []);
+
   useEffect(
     () => () => {
+      cancelProjectResetAnimation();
       for (const timer of arrivalPingTimers.current.values()) {
         window.clearTimeout(timer);
       }
       announceGraphDragPerformance(false);
     },
-    [],
+    [cancelProjectResetAnimation],
   );
 
   const handleTubeArrival = useCallback((arrival: NodeArrival) => {
@@ -2638,6 +2905,7 @@ export function ProjectGraph() {
 
   const zoomGraph = useCallback(
     (direction: 1 | -1) => {
+      cancelProjectResetAnimation();
       setGraphViewport((current) =>
         zoomGraphViewportAt(
           current,
@@ -2645,12 +2913,13 @@ export function ProjectGraph() {
         ),
       );
     },
-    [],
+    [cancelProjectResetAnimation],
   );
 
   const resetGraphZoom = useCallback(() => {
+    cancelProjectResetAnimation();
     setGraphViewport(clampGraphViewport({ zoom: 1, panX: 0, panY: 0 }));
-  }, []);
+  }, [cancelProjectResetAnimation]);
 
   const handleGraphWheel = useCallback(
     (clientX: number, clientY: number, deltaY: number) => {
@@ -2659,12 +2928,13 @@ export function ProjectGraph() {
         return;
       }
 
+      cancelProjectResetAnimation();
       const zoomMultiplier = Math.exp(-deltaY * 0.0012);
       setGraphViewport((current) =>
         zoomGraphViewportAt(current, current.zoom * zoomMultiplier, focus),
       );
     },
-    [screenToSvgViewport],
+    [cancelProjectResetAnimation, screenToSvgViewport],
   );
 
   useEffect(() => {
@@ -2727,6 +2997,7 @@ export function ProjectGraph() {
         return;
       }
 
+      cancelProjectResetAnimation();
       const ctm = svgRef.current?.getScreenCTM() ?? null;
       const viewport = graphViewportRef.current;
 
@@ -2743,7 +3014,7 @@ export function ProjectGraph() {
       setGraphPanning(true);
       event.preventDefault();
     },
-    [screenToSvgViewport],
+    [cancelProjectResetAnimation, screenToSvgViewport],
   );
 
   const handleGraphPointerMove = useCallback(
@@ -2987,6 +3258,120 @@ export function ProjectGraph() {
     },
     [syncAllEdges, syncNodeVisualPosition],
   );
+
+  const resetProjectPositions = useCallback(() => {
+    cancelProjectResetAnimation();
+    dragStateRef.current = null;
+    graphPanStateRef.current = null;
+    perfMetricsRef.current.pointer = null;
+    setDraggingId(null);
+    setGraphPanning(false);
+    setGraphDragPerfMode(false);
+
+    const seconds = window.performance.now() / 1000;
+    const startPositions = new Map<string, LivePosition>();
+    const defaultPositions = new Map<string, LivePosition>();
+    const startViewport = graphViewportRef.current;
+    const defaultViewport = clampGraphViewport({ zoom: 1, panX: 0, panY: 0 });
+
+    for (const node of nodes) {
+      const nodeSeed = nodeFloatSeeds.get(node.id);
+      const clusterSeed = clusterFloatSeeds.get(node.cluster);
+
+      startPositions.set(
+        node.id,
+        livePositionsRef.current.get(node.id) ?? { x: node.x, y: node.y },
+      );
+      defaultPositions.set(
+        node.id,
+        graphFloatEnabled && nodeSeed && clusterSeed
+          ? floatingPositionForNode(
+              node,
+              nodeSeed,
+              clusterSeed,
+              seconds,
+              graphFloatScale,
+            )
+          : { x: node.x, y: node.y },
+      );
+    }
+
+    const duration = prefersReducedMotion ? 0 : PROJECT_RESET_DURATION_MS;
+    const startedAt = window.performance.now();
+
+    const finish = () => {
+      resetAnimationFrameRef.current = null;
+      graphViewportRef.current = defaultViewport;
+      setSvgAttr(
+        graphViewportGroupRef.current,
+        "transform",
+        graphViewportTransform(defaultViewport),
+      );
+      livePositionsRef.current = defaultPositions;
+      syncGraphVisuals(defaultPositions);
+      setDraggedPositions(new Map());
+      setGraphViewport(defaultViewport);
+    };
+
+    if (duration <= 0) {
+      finish();
+      return;
+    }
+
+    const tick = (time: number) => {
+      const progress = clamp01((time - startedAt) / duration);
+      const eased = smootherstep(progress);
+      const nextPositions = new Map<string, LivePosition>();
+      const nextViewport = clampGraphViewport({
+        zoom:
+          startViewport.zoom +
+          (defaultViewport.zoom - startViewport.zoom) * eased,
+        panX:
+          startViewport.panX +
+          (defaultViewport.panX - startViewport.panX) * eased,
+        panY:
+          startViewport.panY +
+          (defaultViewport.panY - startViewport.panY) * eased,
+      });
+
+      for (const node of nodes) {
+        const start = startPositions.get(node.id) ?? node;
+        const target = defaultPositions.get(node.id) ?? node;
+
+        nextPositions.set(node.id, {
+          x: start.x + (target.x - start.x) * eased,
+          y: start.y + (target.y - start.y) * eased,
+        });
+      }
+
+      graphViewportRef.current = nextViewport;
+      setSvgAttr(
+        graphViewportGroupRef.current,
+        "transform",
+        graphViewportTransform(nextViewport),
+      );
+      livePositionsRef.current = nextPositions;
+      syncGraphVisuals(nextPositions);
+
+      if (progress < 1) {
+        resetAnimationFrameRef.current = window.requestAnimationFrame(tick);
+      } else {
+        finish();
+      }
+    };
+
+    resetAnimationFrameRef.current = window.requestAnimationFrame(tick);
+  }, [
+    cancelProjectResetAnimation,
+    clusterFloatSeeds,
+    graphFloatEnabled,
+    graphFloatScale,
+    nodeFloatSeeds,
+    nodes,
+    prefersReducedMotion,
+    setGraphDragPerfMode,
+    syncGraphVisuals,
+  ]);
 
   const applyLiveDragPositions = useCallback(
     (positions: Map<string, LivePosition>) => {
@@ -3232,6 +3617,11 @@ export function ProjectGraph() {
       }
 
       lastFrame = time;
+      if (resetAnimationFrameRef.current !== null) {
+        frame = window.requestAnimationFrame(draw);
+        return;
+      }
+
       const seconds = time / 1000;
       const previous = livePositionsRef.current;
       const activeDrag = dragStateRef.current;
@@ -3307,6 +3697,7 @@ export function ProjectGraph() {
       }
 
       event.stopPropagation();
+      cancelProjectResetAnimation();
       const start = screenToGraph(event.clientX, event.clientY);
       if (!start) {
         return;
@@ -3367,6 +3758,7 @@ export function ProjectGraph() {
     },
     [
       buildDragInfluenceMap,
+      cancelProjectResetAnimation,
       floatOffsetForNodeId,
       liveNodeById,
       nodeById,
@@ -3904,6 +4296,15 @@ export function ProjectGraph() {
             <button
               type="button"
               className="grid h-7 w-7 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300 transition hover:border-accent/40 hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              aria-label="Reset project positions"
+              title="Reset project positions"
+              onClick={resetProjectPositions}
+            >
+              <Home size={13} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="grid h-7 w-7 place-items-center rounded-md border border-white/10 bg-white/[0.04] text-zinc-300 transition hover:border-accent/40 hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
               aria-label="Zoom in"
               title="Zoom in"
               onClick={() => zoomGraph(1)}
@@ -3984,7 +4385,10 @@ export function ProjectGraph() {
               pointerEvents="all"
               aria-hidden="true"
             />
-            <g transform={graphViewportTransform(graphViewport)}>
+            <g
+              ref={graphViewportGroupRef}
+              transform={graphViewportTransform(graphViewport)}
+            >
             {edges.map((edge) => {
               const source =
                 livePositionsRef.current.get(edge.source) ??
@@ -5249,6 +5653,8 @@ function PreviewCard({
 
   const badgeLabel =
     mode === "hovered" ? "Hovering" : mode === "pinned" ? "Pinned" : "Last viewed";
+  const statItems = projectLogistics(project);
+  const featureItems = projectFeatureItems(project);
   const metricItems = project.metrics.slice(0, 6);
   const relationItems = project.relations.slice(0, 8);
 
@@ -5275,68 +5681,119 @@ function PreviewCard({
         </span>
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1.15fr)_minmax(300px,0.85fr)] lg:items-start">
+      <div className="flex items-start gap-3">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-accent/30 bg-accent/10 text-accent">
+          <Icon size={19} aria-hidden="true" />
+        </span>
         <div className="min-w-0">
-          <div className="flex items-start gap-3">
-            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-accent/30 bg-accent/10 text-accent">
-              <Icon size={19} aria-hidden="true" />
-            </span>
-            <div className="min-w-0">
-              <h3 className="text-lg font-semibold leading-tight tracking-tight text-zinc-100">
-                {project.title}
-              </h3>
-              <p className="mt-1 text-sm font-medium text-zinc-300">
-                {project.blurb}
-              </p>
-            </div>
-          </div>
+          <h3 className="text-lg font-semibold leading-tight tracking-tight text-zinc-100">
+            {project.title}
+          </h3>
+          <p className="mt-1 text-sm font-medium text-zinc-300">
+            {project.blurb}
+          </p>
+        </div>
+      </div>
 
-          <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(240px,0.72fr)]">
-            <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
-              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
-                Project Summary
-              </p>
-              <p className="mt-2 text-[14px] leading-7 text-zinc-300">
-                {project.description}
-              </p>
-            </div>
-
-            <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-4">
-              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
-                Why It Matters
-              </p>
-              <p className="mt-2 text-[13px] leading-6 text-zinc-400">
-                {whyProjectMatters(project)}
-              </p>
-            </div>
-          </div>
-
-          <div className="mt-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
-              Key Features
-            </p>
-            <ul className="mt-3 grid gap-3 md:grid-cols-2">
-              {project.bullets.slice(0, 4).map((b) => (
-                <li
-                  key={b}
-                  className="flex gap-2.5 text-[13px] leading-6 text-zinc-400"
-                >
-                  <span
-                    aria-hidden="true"
-                    className="mt-2.5 inline-block h-px w-3 shrink-0 bg-accent/60"
-                  />
-                  <span>{b}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
+      <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,0.65fr)]">
+        <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+            Project Summary
+          </p>
+          <p className="mt-2 text-[14px] leading-7 text-zinc-300">
+            {project.description}
+          </p>
         </div>
 
-        <div className="lg:border-l lg:border-white/[0.06] lg:pl-6">
-          <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-zinc-500">
-            Main Technologies
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+            Why It Matters
           </p>
+          <p className="mt-2 text-[13px] leading-6 text-zinc-400">
+            {whyProjectMatters(project)}
+          </p>
+        </div>
+      </div>
 
+      <div className="mt-4">
+        {statItems.length > 0 && (
+          <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+              Project Snapshot
+            </p>
+            <dl className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+              {statItems.map((stat) => (
+                <div
+                  key={`${stat.label}-${stat.value}`}
+                  className="rounded-lg border border-white/[0.055] bg-white/[0.025] p-3"
+                >
+                  <dt className="font-mono text-[9px] uppercase tracking-[0.16em] text-zinc-500">
+                    {stat.label}
+                  </dt>
+                  <dd className="mt-1 min-w-0">
+                    <span className="block text-sm font-semibold leading-tight text-zinc-100">
+                      {stat.value}
+                    </span>
+                    {stat.detail && (
+                      <span className="mt-1 block text-[11px] leading-4 text-zinc-500">
+                        {stat.detail}
+                      </span>
+                    )}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+        <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+          Key Features
+        </p>
+        <ul className="mt-3 grid auto-rows-fr gap-3 md:grid-cols-2">
+          {featureItems.map((b, index) => (
+            <li
+              key={b}
+              className="flex h-full gap-2.5 rounded-lg border border-white/[0.045] bg-black/10 p-3 text-[13px] leading-6 text-zinc-400"
+            >
+              <span
+                aria-hidden="true"
+                className="mt-1.5 shrink-0 font-mono text-[10px] text-accent/70"
+              >
+                {String(index + 1).padStart(2, "0")}
+              </span>
+              <span>{b}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.6fr)]">
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
+            Engineering Signals
+          </p>
+          <ul className="mt-3 grid gap-2 sm:grid-cols-2">
+            {metricItems.map((metric) => (
+              <li
+                key={metric}
+                className="flex gap-2 text-[12px] leading-5 text-zinc-400"
+              >
+                <span
+                  aria-hidden="true"
+                  className="mt-2 inline-block h-1 w-1 shrink-0 rounded-full bg-accent/70"
+                />
+                <span>{metric}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div className="rounded-xl border border-white/[0.06] bg-black/10 p-4">
+          <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
+            Stack And Links
+          </p>
           <ul className="mt-3 flex flex-wrap gap-1.5">
             {project.tech.slice(0, 8).map((t) => (
               <li key={t} className="badge text-[10px]">
@@ -5350,45 +5807,20 @@ function PreviewCard({
             )}
           </ul>
 
-          <div className="mt-3 rounded-xl border border-white/[0.06] bg-white/[0.02] p-4">
-            <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-accent/80">
-              Engineering Signals
-            </p>
-            <ul className="mt-3 grid gap-2">
-              {metricItems.map((metric) => (
+          {relationItems.length > 0 && (
+            <ul className="mt-3 flex flex-wrap gap-1.5 border-t border-white/[0.06] pt-3">
+              {relationItems.map((relation) => (
                 <li
-                  key={metric}
-                  className="flex gap-2 text-[12px] leading-5 text-zinc-400"
+                  key={relation}
+                  className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[10px] text-zinc-400"
                 >
-                  <span
-                    aria-hidden="true"
-                    className="mt-2 inline-block h-1 w-1 shrink-0 rounded-full bg-accent/70"
-                  />
-                  <span>{metric}</span>
+                  {relation}
                 </li>
               ))}
             </ul>
-          </div>
-
-          {relationItems.length > 0 && (
-            <div className="mt-4">
-              <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-zinc-500">
-                Relation Tags
-              </p>
-              <ul className="mt-2 flex flex-wrap gap-1.5">
-                {relationItems.map((relation) => (
-                  <li
-                    key={relation}
-                    className="rounded-full border border-white/10 bg-white/[0.03] px-2.5 py-1 text-[10px] text-zinc-400"
-                  >
-                    {relation}
-                  </li>
-                ))}
-              </ul>
-            </div>
           )}
 
-          <div className="mt-5 flex flex-wrap gap-2 border-t border-white/[0.06] pt-4">
+          <div className="mt-4 flex flex-wrap gap-2 border-t border-white/[0.06] pt-4">
             <a
               href={project.github}
               target="_blank"
