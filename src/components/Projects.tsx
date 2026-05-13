@@ -1,8 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { SectionHeading } from "./SectionHeading";
-import { ProjectGraph } from "./ProjectGraph";
+import { ProjectSignals } from "./ProjectSignals";
 
 const GRAPH_FORCE_MOUNT_DELAY_MS = 1600;
+const LazyProjectGraph = lazy(() =>
+  import("./ProjectGraph").then((module) => ({ default: module.ProjectGraph })),
+);
 
 function GraphPlaceholder() {
   return (
@@ -64,6 +67,7 @@ export function Projects() {
       ref={sectionRef}
       id="projects"
       className="scroll-mt-20 pt-14 pb-24 sm:pt-18 sm:pb-32"
+      aria-labelledby="projects-heading"
     >
       <div className="section">
         <SectionHeading
@@ -72,10 +76,17 @@ export function Projects() {
           title="A graph of projects, linked by stack and concept."
           description="Each node is a project. Lines connect related work through shared technologies, architecture, data, or platform choices. Hover or tap a node to trace its links and load the details below."
         />
+        <ProjectSignals />
       </div>
 
       <div className="mt-10 px-3 sm:px-5 lg:px-8">
-        {shouldMountGraph ? <ProjectGraph /> : <GraphPlaceholder />}
+        {shouldMountGraph ? (
+          <Suspense fallback={<GraphPlaceholder />}>
+            <LazyProjectGraph />
+          </Suspense>
+        ) : (
+          <GraphPlaceholder />
+        )}
       </div>
     </section>
   );
