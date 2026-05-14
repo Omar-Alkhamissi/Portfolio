@@ -1,5 +1,6 @@
 import { Navbar } from "./components/Navbar";
 import { Hero } from "./components/Hero";
+import { PortfolioStats } from "./components/PortfolioStats";
 import { About } from "./components/About";
 import { Skills } from "./components/Skills";
 import { Projects } from "./components/Projects";
@@ -17,6 +18,7 @@ export default function App() {
         <Hero aside={<About variant="panel" />} />
         <Skills />
         <Projects />
+        <PortfolioStats />
         <Experience />
         <Contact />
       </main>

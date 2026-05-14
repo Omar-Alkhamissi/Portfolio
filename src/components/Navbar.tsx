@@ -4,6 +4,8 @@ import { Menu, X } from "lucide-react";
 import { site } from "../data/site";
 import { cn } from "../lib/cn";
 
+const ANCHOR_SETTLE_DELAYS_MS = [140, 420, 900, 1700];
+
 const noFill = {
   "data-lpignore": "true",
   "data-1p-ignore": "",
@@ -12,6 +14,37 @@ const noFill = {
   "data-form-type": "other",
   autoComplete: "off",
 } as const;
+
+function scrollToHash(hash: string) {
+  const id = hash.replace(/^#/, "");
+  const target = document.getElementById(id);
+
+  if (!target) {
+    return;
+  }
+
+  const settleScroll = () => {
+    const freshTarget = document.getElementById(id);
+    if (!freshTarget) {
+      return;
+    }
+
+    const scrollMarginTop =
+      parseFloat(window.getComputedStyle(freshTarget).scrollMarginTop) || 0;
+    const targetTop = freshTarget.getBoundingClientRect().top;
+
+    if (Math.abs(targetTop - scrollMarginTop) > 8) {
+      freshTarget.scrollIntoView({ behavior: "auto", block: "start" });
+    }
+  };
+
+  window.history.pushState(null, "", hash);
+  target.scrollIntoView({ behavior: "smooth", block: "start" });
+
+  for (const delay of ANCHOR_SETTLE_DELAYS_MS) {
+    window.setTimeout(settleScroll, delay);
+  }
+}
 
 function LogoMark() {
   return (
@@ -88,6 +121,10 @@ export function Navbar() {
             <li key={item.href}>
               <a
                 href={item.href}
+                onClick={(event) => {
+                  event.preventDefault();
+                  scrollToHash(item.href);
+                }}
                 className="rounded-md px-3 py-2 font-mono text-[13px] text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-white"
               >
                 <span className="text-accent/70">/</span>
@@ -134,7 +171,11 @@ export function Navbar() {
                 <li key={item.href}>
                   <a
                     href={item.href}
-                    onClick={() => setOpen(false)}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      setOpen(false);
+                      scrollToHash(item.href);
+                    }}
                     className="block rounded-md px-3 py-2.5 font-mono text-sm text-zinc-300 hover:bg-white/[0.04] hover:text-white"
                   >
                     <span className="text-accent/70">/</span>

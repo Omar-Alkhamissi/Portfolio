@@ -101,5 +101,42 @@
     mask-image: radial-gradient(ellipse 70% 50% at 50% 0%, black, transparent 70%);
     -webkit-mask-image: radial-gradient(ellipse 70% 50% at 50% 0%, black, transparent 70%);
   }
+
+  .github-dashboard-main {
+    display: grid;
+    align-items: stretch;
+    gap: 1.25rem;
+    min-width: 0;
+  }
+
+  .github-visual-stack {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0.75rem;
+    min-width: 0;
+    height: 100%;
+  }
+
+  .github-stat-rail {
+    display: grid;
+    gap: 1rem;
+    min-width: 0;
+  }
+
+  @media (min-width: 700px) {
+    .github-dashboard-main {
+      grid-template-columns: minmax(248px, 0.34fr) minmax(0, 1fr);
+    }
+
+    .github-stat-rail {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (max-width: 699px) {
+    .github-stat-rail {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
 }
 

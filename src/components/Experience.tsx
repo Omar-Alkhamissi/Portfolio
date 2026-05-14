@@ -14,7 +14,7 @@ export function Experience() {
       <div className="section">
         <SectionHeading
           id="experience-heading"
-          eyebrow="04 / Experience"
+          eyebrow="05 / Experience"
           title="Education, work, and leadership."
           description="Where I'm studying, what I've built for clients, and how I'm involved on campus."
         />

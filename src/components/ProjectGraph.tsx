@@ -283,7 +283,11 @@ const GRAPH_ZOOM_MIN = 0.45;
 const GRAPH_ZOOM_MAX = 1.85;
 const GRAPH_ZOOM_STEP = 0.18;
 const GRAPH_PAN_OVERSCROLL = 1.25;
+const PROJECT_INTRO_DURATION_MS = 1000;
+const PROJECT_INTRO_STAGGER_MS = 80;
+const PROJECT_INTRO_WAVE_DELAY_MS = 220;
 const PROJECT_RESET_DURATION_MS = 650;
+const PROJECT_RESET_LEAD_MS = 48;
 const GRAPH_NODE_DRAG_OVERSCROLL = Math.max(VIEWBOX_W, VIEWBOX_H) * 4;
 const GRAPH_FILTER_MARGIN = GRAPH_NODE_DRAG_OVERSCROLL + 180;
 const DRAG_TUG_MAX_DEPTH = 3;
@@ -291,16 +295,19 @@ const DRAG_TUG_DIRECT_PULL = 0.68;
 const DRAG_TUG_DECAY = 0.46;
 const DRAG_TUG_MIN_PULL = 0.075;
 const DRAG_TUG_FLOAT_SCALE = 0.58;
-const DRAG_TUG_ANCHOR_SPRING = 8.5;
-const DRAG_TUG_EDGE_SPRING = 74;
-const DRAG_TUG_EDGE_DAMPING = 1.4;
-const DRAG_TUG_DAMPING_BASE = 5.9;
-const DRAG_TUG_DAMPING_DEPTH = 0.95;
-const DRAG_TUG_MASS_BASE = 0.86;
-const DRAG_TUG_MASS_DEPTH = 0.34;
-const DRAG_TUG_MASS_JITTER = 0.42;
+const DRAG_TUG_DIRECT_TRANSLATE = 0.12;
+const DRAG_TUG_DEPTH_LAG = 0.52;
+const DRAG_TUG_VELOCITY_DEPTH_DECAY = 0.26;
+const DRAG_TUG_ANCHOR_SPRING = 5.6;
+const DRAG_TUG_EDGE_SPRING = 42;
+const DRAG_TUG_EDGE_DAMPING = 0.86;
+const DRAG_TUG_DAMPING_BASE = 4.7;
+const DRAG_TUG_DAMPING_DEPTH = 0.72;
+const DRAG_TUG_MASS_BASE = 1.02;
+const DRAG_TUG_MASS_DEPTH = 0.56;
+const DRAG_TUG_MASS_JITTER = 0.58;
 const DRAG_TUG_MAX_DT = 0.045;
-const DRAG_TUG_MAX_VELOCITY = 1200;
+const DRAG_TUG_MAX_VELOCITY = 980;
 
 const TECH_WEIGHT: Record<string, number> = {
   react: 1.2,
@@ -1491,6 +1498,17 @@ function clampNodeToViewport(node: Node) {
   node.y = clamped.y;
 }
 
+function introBurstStartPosition(node: Node): LivePosition {
+  const seed = hashString(`project-graph-intro:${node.id}`);
+  const angle = (seed % 1000) / 1000 * TAU;
+  const radius = 34 + (seed % 74);
+
+  return clampPositionToNodeBounds(node, {
+    x: CENTER_X + Math.cos(angle) * radius,
+    y: CENTER_Y + Math.sin(angle) * radius,
+  });
+}
+
 function buildGraph(items: Project[]): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = items.map((project) => {
     const labelWidth = estimateLabelWidth(project.title);
@@ -2446,6 +2464,10 @@ export function ProjectGraph() {
   const graphFloatEnabled = Boolean(
     !diagnostics.staticMode && !prefersReducedMotion,
   );
+  const graphIntroEnabled = Boolean(
+    !diagnostics.staticMode && !prefersReducedMotion,
+  );
+  const [graphWavesReady, setGraphWavesReady] = useState(!graphIntroEnabled);
   const graphFloatScale = graphFloatEnabled
     ? graphFloatScaleFor(performanceProfile.quality)
     : 0;
@@ -2479,6 +2501,9 @@ export function ProjectGraph() {
   const svgRef = useRef<SVGSVGElement | null>(null);
   const graphViewportGroupRef = useRef<SVGGElement | null>(null);
   const graphViewportRef = useRef<GraphViewport>(graphViewport);
+  const graphIntroCompleteRef = useRef(!graphIntroEnabled);
+  const graphIntroAnimationFrameRef = useRef<number | null>(null);
+  const graphIntroWaveTimerRef = useRef<number | null>(null);
   const resetAnimationFrameRef = useRef<number | null>(null);
   const perfMetricsRef = useRef<GraphPerfMetrics>({
     waveFrameMs: 0,
@@ -2555,15 +2580,22 @@ export function ProjectGraph() {
     const activeDragInfluences = activeDrag?.moved
       ? activeDrag.influenceById
       : null;
+    const graphIntroPending = graphIntroEnabled && !graphIntroCompleteRef.current;
     const fresh = new Map<string, LivePosition>();
     for (const node of liveNodes) {
       const liveDragPosition =
         activeDragInfluences?.has(node.id) ? previous.get(node.id) : null;
       const preservedFloatPosition =
-        graphFloatEnabled ? previous.get(node.id) : null;
+        graphFloatEnabled && !graphIntroPending ? previous.get(node.id) : null;
+      const introPosition = graphIntroPending
+        ? introBurstStartPosition(node)
+        : null;
       fresh.set(
         node.id,
-        liveDragPosition ?? preservedFloatPosition ?? { x: node.x, y: node.y },
+        liveDragPosition ??
+          preservedFloatPosition ??
+          introPosition ??
+          { x: node.x, y: node.y },
       );
     }
     livePositionsRef.current = fresh;
@@ -2589,15 +2621,43 @@ export function ProjectGraph() {
     }
   }, []);
 
+  const cancelGraphIntroAnimation = useCallback(() => {
+    if (graphIntroAnimationFrameRef.current !== null) {
+      window.cancelAnimationFrame(graphIntroAnimationFrameRef.current);
+      graphIntroAnimationFrameRef.current = null;
+    }
+  }, []);
+
+  const clearGraphIntroWaveTimer = useCallback(() => {
+    if (graphIntroWaveTimerRef.current !== null) {
+      window.clearTimeout(graphIntroWaveTimerRef.current);
+      graphIntroWaveTimerRef.current = null;
+    }
+  }, []);
+
+  const releaseGraphWaves = useCallback(() => {
+    clearGraphIntroWaveTimer();
+    graphIntroWaveTimerRef.current = window.setTimeout(() => {
+      graphIntroWaveTimerRef.current = null;
+      setGraphWavesReady(true);
+    }, PROJECT_INTRO_WAVE_DELAY_MS);
+  }, [clearGraphIntroWaveTimer]);
+
   useEffect(
     () => () => {
       cancelProjectResetAnimation();
+      cancelGraphIntroAnimation();
+      clearGraphIntroWaveTimer();
       for (const timer of arrivalPingTimers.current.values()) {
         window.clearTimeout(timer);
       }
       announceGraphDragPerformance(false);
     },
-    [cancelProjectResetAnimation],
+    [
+      cancelGraphIntroAnimation,
+      cancelProjectResetAnimation,
+      clearGraphIntroWaveTimer,
+    ],
   );
 
   const handleTubeArrival = useCallback((arrival: NodeArrival) => {
@@ -2633,6 +2693,15 @@ export function ProjectGraph() {
     }, BADGE_PING_DURATION * 1000 + 140);
 
     arrivalPingTimers.current.set(arrival.nodeId, timer);
+  }, []);
+
+  const clearArrivalPings = useCallback(() => {
+    for (const timer of arrivalPingTimers.current.values()) {
+      window.clearTimeout(timer);
+    }
+
+    arrivalPingTimers.current.clear();
+    setArrivalPingById(new Map());
   }, []);
 
   const recordGraphFrameMetric = useCallback(
@@ -2921,6 +2990,7 @@ export function ProjectGraph() {
     setGraphViewport(clampGraphViewport({ zoom: 1, panX: 0, panY: 0 }));
   }, [cancelProjectResetAnimation]);
 
+  /*
   const handleGraphWheel = useCallback(
     (clientX: number, clientY: number, deltaY: number) => {
       const focus = screenToSvgViewport(clientX, clientY);
@@ -2980,6 +3050,7 @@ export function ProjectGraph() {
       window.removeEventListener("wheel", handleWheel, wheelOptions);
     };
   }, [handleGraphWheel]);
+  */
 
   const handleGraphPointerDown = useCallback(
     (event: React.PointerEvent<SVGSVGElement>) => {
@@ -3259,47 +3330,202 @@ export function ProjectGraph() {
     [syncAllEdges, syncNodeVisualPosition],
   );
 
+  const defaultVisualPositionForNode = useCallback(
+    (node: Node, seconds: number, scale = graphFloatScale) => {
+      const nodeSeed = nodeFloatSeeds.get(node.id);
+      const clusterSeed = clusterFloatSeeds.get(node.cluster);
+
+      return graphFloatEnabled && nodeSeed && clusterSeed
+        ? floatingPositionForNode(node, nodeSeed, clusterSeed, seconds, scale)
+        : { x: node.x, y: node.y };
+    },
+    [clusterFloatSeeds, graphFloatEnabled, graphFloatScale, nodeFloatSeeds],
+  );
+
+  const startGraphIntro = useCallback(() => {
+    if (
+      !graphIntroEnabled ||
+      graphIntroCompleteRef.current ||
+      graphIntroAnimationFrameRef.current !== null
+    ) {
+      return;
+    }
+
+    cancelProjectResetAnimation();
+    clearArrivalPings();
+    setGraphWavesReady(false);
+    const startPositions = new Map<string, LivePosition>();
+    const targetPositions = new Map<string, LivePosition>();
+    const delays = new Map<string, number>();
+    let maxDelay = 0;
+
+    for (const node of nodes) {
+      const delay =
+        hashString(`project-graph-intro-delay:${node.id}`) %
+        PROJECT_INTRO_STAGGER_MS;
+      maxDelay = Math.max(maxDelay, delay);
+      delays.set(node.id, delay);
+      startPositions.set(
+        node.id,
+        livePositionsRef.current.get(node.id) ?? introBurstStartPosition(node),
+      );
+      targetPositions.set(node.id, { x: node.x, y: node.y });
+    }
+
+    const startedAt = window.performance.now();
+
+    const finish = () => {
+      const finalSeconds = window.performance.now() / 1000;
+      const finalPositions = new Map<string, LivePosition>();
+
+      for (const node of nodes) {
+        finalPositions.set(
+          node.id,
+          defaultVisualPositionForNode(node, finalSeconds),
+        );
+      }
+
+      graphIntroAnimationFrameRef.current = null;
+      graphIntroCompleteRef.current = true;
+      livePositionsRef.current = finalPositions;
+      syncGraphVisuals(finalPositions);
+      releaseGraphWaves();
+    };
+
+    const tick = (time: number) => {
+      const elapsed = time - startedAt;
+      const seconds = time / 1000;
+      const nextPositions = new Map<string, LivePosition>();
+
+      for (const node of nodes) {
+        const delay = delays.get(node.id) ?? 0;
+        const localProgress = clamp01(
+          (elapsed - delay) / PROJECT_INTRO_DURATION_MS,
+        );
+        const eased = easeOutCubic(localProgress);
+        const floatBlend = smootherstep((localProgress - 0.35) / 0.65);
+        const start = startPositions.get(node.id) ?? introBurstStartPosition(node);
+        const target = targetPositions.get(node.id) ?? node;
+        const burstPosition = {
+          x: start.x + (target.x - start.x) * eased,
+          y: start.y + (target.y - start.y) * eased,
+        };
+        const floatingTarget = defaultVisualPositionForNode(
+          node,
+          seconds,
+          graphFloatScale,
+        );
+
+        nextPositions.set(node.id, {
+          x: burstPosition.x + (floatingTarget.x - burstPosition.x) * floatBlend,
+          y: burstPosition.y + (floatingTarget.y - burstPosition.y) * floatBlend,
+        });
+      }
+
+      livePositionsRef.current = nextPositions;
+      syncGraphVisuals(nextPositions);
+
+      if (elapsed < PROJECT_INTRO_DURATION_MS + maxDelay) {
+        graphIntroAnimationFrameRef.current = window.requestAnimationFrame(tick);
+      } else {
+        finish();
+      }
+    };
+
+    graphIntroAnimationFrameRef.current = window.requestAnimationFrame(tick);
+  }, [
+    cancelProjectResetAnimation,
+    clearArrivalPings,
+    defaultVisualPositionForNode,
+    graphIntroEnabled,
+    graphFloatScale,
+    nodes,
+    releaseGraphWaves,
+    syncGraphVisuals,
+  ]);
+
+  useEffect(() => {
+    if (!graphIntroEnabled) {
+      graphIntroCompleteRef.current = true;
+      cancelGraphIntroAnimation();
+      releaseGraphWaves();
+      return;
+    }
+
+    if (graphIntroCompleteRef.current) {
+      return;
+    }
+
+    const graphFrame = graphFrameRef.current;
+    if (!graphFrame) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (entry?.isIntersecting && entry.intersectionRatio >= 0.25) {
+          startGraphIntro();
+          observer.disconnect();
+        }
+      },
+      {
+        rootMargin: "-10% 0px -15% 0px",
+        threshold: [0.25, 0.45],
+      },
+    );
+
+    observer.observe(graphFrame);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [cancelGraphIntroAnimation, graphIntroEnabled, startGraphIntro]);
+
   const resetProjectPositions = useCallback(() => {
+    const shouldDelayWaves = !graphWavesReady;
+
+    cancelGraphIntroAnimation();
+    if (shouldDelayWaves) {
+      clearGraphIntroWaveTimer();
+      clearArrivalPings();
+    }
+    graphIntroCompleteRef.current = true;
     cancelProjectResetAnimation();
     dragStateRef.current = null;
     graphPanStateRef.current = null;
     perfMetricsRef.current.pointer = null;
+    setDraggedPositions(new Map());
     setDraggingId(null);
     setGraphPanning(false);
     setGraphDragPerfMode(false);
 
-    const seconds = window.performance.now() / 1000;
     const startPositions = new Map<string, LivePosition>();
-    const defaultPositions = new Map<string, LivePosition>();
     const startViewport = graphViewportRef.current;
     const defaultViewport = clampGraphViewport({ zoom: 1, panX: 0, panY: 0 });
 
     for (const node of nodes) {
-      const nodeSeed = nodeFloatSeeds.get(node.id);
-      const clusterSeed = clusterFloatSeeds.get(node.cluster);
-
       startPositions.set(
         node.id,
         livePositionsRef.current.get(node.id) ?? { x: node.x, y: node.y },
       );
-      defaultPositions.set(
-        node.id,
-        graphFloatEnabled && nodeSeed && clusterSeed
-          ? floatingPositionForNode(
-              node,
-              nodeSeed,
-              clusterSeed,
-              seconds,
-              graphFloatScale,
-            )
-          : { x: node.x, y: node.y },
-      );
     }
 
     const duration = prefersReducedMotion ? 0 : PROJECT_RESET_DURATION_MS;
-    const startedAt = window.performance.now();
+    const visualLeadMs = Math.min(PROJECT_RESET_LEAD_MS, duration * 0.2);
+    const startedAt = window.performance.now() - visualLeadMs;
 
     const finish = () => {
+      const finalSeconds = window.performance.now() / 1000;
+      const finalPositions = new Map<string, LivePosition>();
+
+      for (const node of nodes) {
+        finalPositions.set(
+          node.id,
+          defaultVisualPositionForNode(node, finalSeconds),
+        );
+      }
+
       resetAnimationFrameRef.current = null;
       graphViewportRef.current = defaultViewport;
       setSvgAttr(
@@ -3307,10 +3533,12 @@ export function ProjectGraph() {
         "transform",
         graphViewportTransform(defaultViewport),
       );
-      livePositionsRef.current = defaultPositions;
-      syncGraphVisuals(defaultPositions);
-      setDraggedPositions(new Map());
+      livePositionsRef.current = finalPositions;
+      syncGraphVisuals(finalPositions);
       setGraphViewport(defaultViewport);
+      if (shouldDelayWaves) {
+        releaseGraphWaves();
+      }
     };
 
     if (duration <= 0) {
@@ -3318,9 +3546,10 @@ export function ProjectGraph() {
       return;
     }
 
-    const tick = (time: number) => {
+    const renderResetFrame = (time: number, syncViewportState = false) => {
       const progress = clamp01((time - startedAt) / duration);
-      const eased = smootherstep(progress);
+      const eased = easeOutSine(progress);
+      const seconds = time / 1000;
       const nextPositions = new Map<string, LivePosition>();
       const nextViewport = clampGraphViewport({
         zoom:
@@ -3336,7 +3565,7 @@ export function ProjectGraph() {
 
       for (const node of nodes) {
         const start = startPositions.get(node.id) ?? node;
-        const target = defaultPositions.get(node.id) ?? node;
+        const target = defaultVisualPositionForNode(node, seconds);
 
         nextPositions.set(node.id, {
           x: start.x + (target.x - start.x) * eased,
@@ -3352,23 +3581,37 @@ export function ProjectGraph() {
       );
       livePositionsRef.current = nextPositions;
       syncGraphVisuals(nextPositions);
+      if (syncViewportState) {
+        setGraphViewport(nextViewport);
+      }
 
-      if (progress < 1) {
-        resetAnimationFrameRef.current = window.requestAnimationFrame(tick);
-      } else {
+      return progress >= 1;
+    };
+
+    const tick = (time: number) => {
+      if (renderResetFrame(time)) {
         finish();
+      } else {
+        resetAnimationFrameRef.current = window.requestAnimationFrame(tick);
       }
     };
 
+    if (renderResetFrame(window.performance.now(), true)) {
+      finish();
+      return;
+    }
+
     resetAnimationFrameRef.current = window.requestAnimationFrame(tick);
   }, [
+    cancelGraphIntroAnimation,
     cancelProjectResetAnimation,
-    clusterFloatSeeds,
-    graphFloatEnabled,
-    graphFloatScale,
-    nodeFloatSeeds,
+    clearArrivalPings,
+    clearGraphIntroWaveTimer,
+    defaultVisualPositionForNode,
+    graphWavesReady,
     nodes,
     prefersReducedMotion,
+    releaseGraphWaves,
     setGraphDragPerfMode,
     syncGraphVisuals,
   ]);
@@ -3469,27 +3712,29 @@ export function ProjectGraph() {
         }
 
         const depth = drag.depthById.get(nodeId) ?? DRAG_TUG_MAX_DEPTH;
+        const depthLag = 1 / (1 + depth * DRAG_TUG_DEPTH_LAG);
+        const response = Math.pow(influence, 1.16) * depthLag;
         const startFloat = drag.startFloatOffsets.get(nodeId) ?? { x: 0, y: 0 };
         const currentFloat = floatOffsetForNodeId(nodeId, seconds);
         const floatFollow =
-          DRAG_TUG_FLOAT_SCALE * Math.max(0.28, 1 - influence * 0.45);
+          DRAG_TUG_FLOAT_SCALE * Math.max(0.24, 1 - response * 0.52);
         const anchorTarget = clampPositionToNodeBounds(
           node,
           {
             x:
               start.x +
-              drag.currentDx * influence * 0.16 +
+              drag.currentDx * response * DRAG_TUG_DIRECT_TRANSLATE +
               (currentFloat.x - startFloat.x) * floatFollow,
             y:
               start.y +
-              drag.currentDy * influence * 0.16 +
+              drag.currentDy * response * DRAG_TUG_DIRECT_TRANSLATE +
               (currentFloat.y - startFloat.y) * floatFollow,
           },
           GRAPH_NODE_DRAG_OVERSCROLL,
         );
         const velocity = velocitySnapshot.get(nodeId) ?? { x: 0, y: 0 };
         const anchorSpring =
-          DRAG_TUG_ANCHOR_SPRING * (0.42 + influence * 0.58);
+          DRAG_TUG_ANCHOR_SPRING * (0.32 + response * 0.68) * depthLag;
         let forceX = (anchorTarget.x - current.x) * anchorSpring;
         let forceY = (anchorTarget.y - current.y) * anchorSpring;
 
@@ -3507,12 +3752,18 @@ export function ProjectGraph() {
           }
 
           const otherInfluence = drag.influenceById.get(otherId) ?? 0;
+          const otherDepth = drag.depthById.get(otherId) ?? depth;
           const edgeInfluence = Math.max(influence, otherInfluence);
+          const edgeDepthLag =
+            1 /
+            (1 +
+              Math.max(depth, otherDepth) * DRAG_TUG_DEPTH_LAG +
+              Math.abs(depth - otherDepth) * 0.18);
           const edgeStrength =
             DRAG_TUG_EDGE_SPRING *
             (0.58 + Math.min(edge.weight, 3) * 0.14) *
-            Math.max(0.18, edgeInfluence) *
-            (1 / (1 + depth * 0.16));
+            Math.max(0.16, Math.pow(edgeInfluence, 1.08)) *
+            edgeDepthLag;
           const targetFromEdge = {
             x: otherPosition.x - (otherStart.x - start.x),
             y: otherPosition.y - (otherStart.y - start.y),
@@ -3523,7 +3774,9 @@ export function ProjectGraph() {
 
           const otherVelocity = velocitySnapshot.get(otherId) ?? { x: 0, y: 0 };
           const relativeDamping =
-            DRAG_TUG_EDGE_DAMPING * Math.max(0.16, edgeInfluence);
+            DRAG_TUG_EDGE_DAMPING *
+            Math.max(0.14, Math.pow(edgeInfluence, 0.92)) *
+            edgeDepthLag;
 
           forceX += (otherVelocity.x - velocity.x) * relativeDamping;
           forceY += (otherVelocity.y - velocity.y) * relativeDamping;
@@ -3543,9 +3796,11 @@ export function ProjectGraph() {
         let nextVx = (velocity.x + (forceX / mass) * dt) * decay;
         let nextVy = (velocity.y + (forceY / mass) * dt) * decay;
         const velocityLength = Math.hypot(nextVx, nextVy);
+        const velocityLimit =
+          DRAG_TUG_MAX_VELOCITY / (1 + depth * DRAG_TUG_VELOCITY_DEPTH_DECAY);
 
-        if (velocityLength > DRAG_TUG_MAX_VELOCITY) {
-          const scale = DRAG_TUG_MAX_VELOCITY / velocityLength;
+        if (velocityLength > velocityLimit) {
+          const scale = velocityLimit / velocityLength;
           nextVx *= scale;
           nextVy *= scale;
         }
@@ -3617,7 +3872,11 @@ export function ProjectGraph() {
       }
 
       lastFrame = time;
-      if (resetAnimationFrameRef.current !== null) {
+      if (
+        resetAnimationFrameRef.current !== null ||
+        graphIntroAnimationFrameRef.current !== null ||
+        (graphIntroEnabled && !graphIntroCompleteRef.current)
+      ) {
         frame = window.requestAnimationFrame(draw);
         return;
       }
@@ -4193,8 +4452,10 @@ export function ProjectGraph() {
       }];
     });
   }, [edges, nodeById]);
+  const graphWavesActive =
+    graphWavesReady && !diagnostics.disableWaves && !dragPerfActive;
   const renderedFlowCount =
-    diagnostics.disableWaves || dragPerfActive ? 0 : clusterFlows.length;
+    graphWavesActive ? clusterFlows.length : 0;
 
   return (
     <motion.div
@@ -4501,7 +4762,7 @@ export function ProjectGraph() {
                 </g>
               );
             })}
-            {!diagnostics.disableWaves && !dragPerfActive && clusterFlows.map((flow) => {
+            {graphWavesActive && clusterFlows.map((flow) => {
               const hasHighlightedSegment = flow.routes.some((route) =>
                 route.some((segment) => isEdgeHighlighted(segment.edge)),
               );
@@ -5064,6 +5325,15 @@ function chooseWaveSegment(
 function smoothstep(value: number) {
   const t = clamp01(value);
   return t * t * (3 - 2 * t);
+}
+
+function easeOutCubic(value: number) {
+  const t = 1 - clamp01(value);
+  return 1 - t * t * t;
+}
+
+function easeOutSine(value: number) {
+  return Math.sin((clamp01(value) * Math.PI) / 2);
 }
 
 function smootherstep(value: number) {

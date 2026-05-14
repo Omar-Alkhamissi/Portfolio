@@ -35,7 +35,7 @@ export function Contact() {
           <div className="relative">
             <span className="eyebrow">
               <span className="h-px w-6 bg-accent/60" />
-              05 / Contact
+              06 / Contact
             </span>
             <h2
               id="contact-heading"
