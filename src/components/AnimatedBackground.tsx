@@ -43,6 +43,9 @@ const PARALLAX = {
 
 // Star drift in CSS px/s per depth layer (far, middle, near).
 const DRIFT_PX_PER_S = [3, 6, 10] as const;
+// Each layer heads its own way: the far layer follows the nebula axis, the
+// other two are turned away from it, so the layers cross instead of streaming.
+const DRIFT_TURN_DEG = [0, 115, -130] as const;
 const DRIFT_MAX_DT_MS = 100;
 const DRIFT_FPS_FULL = 30;
 const DRIFT_FPS_BALANCED = 20;
@@ -660,8 +663,11 @@ export function AnimatedBackground() {
       driftLast = now;
       for (let i = 0; i < driftX.length; i++) {
         const step = (DRIFT_PX_PER_S[i] * dt) / 1000;
-        driftX[i] = wrapMod(driftX[i] + driftUx * step, tileW);
-        driftY[i] = wrapMod(driftY[i] + driftUy * step, tileH);
+        const turn = (DRIFT_TURN_DEG[i] * Math.PI) / 180;
+        const ux = driftUx * Math.cos(turn) - driftUy * Math.sin(turn);
+        const uy = driftUx * Math.sin(turn) + driftUy * Math.cos(turn);
+        driftX[i] = wrapMod(driftX[i] + ux * step, tileW);
+        driftY[i] = wrapMod(driftY[i] + uy * step, tileH);
       }
     };
 
@@ -719,7 +725,9 @@ export function AnimatedBackground() {
       // Debug value for browser checks: the far layer's drift offset, about once a second.
       if (now - offsetReportedAt >= STAR_OFFSET_REPORT_MS) {
         offsetReportedAt = now;
-        canvas.dataset.starOffset = `${driftX[0].toFixed(1)},${driftY[0].toFixed(1)}`;
+        canvas.dataset.starOffset = driftX
+          .map((x, i) => `${x.toFixed(1)},${driftY[i].toFixed(1)}`)
+          .join(" ");
       }
 
       if (meteor) {
