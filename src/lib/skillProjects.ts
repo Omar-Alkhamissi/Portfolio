@@ -89,6 +89,77 @@ function matchSkills(text: string): string[] {
   );
 }
 
+/**
+ * Implications that are true by definition, applied after the direct matches above.
+ * A tech list names frameworks and tools, not the languages under them (a React project
+ * is JavaScript whether or not "JS" is written down), so the direct table alone undercounts.
+ * Only certain implications belong here; likely-but-not-certain ones stay out.
+ */
+const IMPLIES_FROM_SKILL: Record<string, string[]> = {
+  JS: [
+    "React",
+    "Vue 3",
+    "Quasar",
+    "MUI",
+    "Node/Express",
+    "RN",
+    "Expo",
+    "Socket.IO",
+    "Jest",
+    "Supertest",
+    "Mongoose",
+    "Vite",
+  ],
+  HTML: ["React", "Vue 3", "Quasar", "MUI", "Tailwind"],
+  CSS: ["React", "Vue 3", "Quasar", "MUI", "Tailwind"],
+  "C#": ["ASP.NET", "EF Core", "xUnit"],
+  "C++": ["Google Test"],
+  SQL: ["SQL Server", "PostgreSQL", "SQLite"],
+  RN: ["Expo"],
+  Firebase: ["Firestore"],
+  MongoDB: ["Mongoose"],
+  "REST APIs": ["Swagger"],
+};
+
+// Tech strings (never relations) that name a tool whose language or stack is certain.
+const IMPLIES_FROM_TECH: Record<string, RegExp[]> = {
+  JS: [/^Express\b/i, /^Node(\.js)?$/i, /^Next\.js\b/i, /^jQuery\b/i],
+  TS: [/^Angular\b/i],
+  "C#": [/\.NET\b/i, /\bWPF\b/i, /\bWinForms\b/i, /\bBlazor\b/i, /\bLINQ\b/i],
+  Java: [/^Spring\b/i, /^JUnit\b/i, /^JavaFX\b/i, /^Swing\b/i, /^JDBC\b/i, /^Maven\b/i, /^Gradle\b/i],
+  "C++": [/\bSTL\b/i],
+  SQL: [/^MySQL\b/i, /^Oracle\b/i, /\bT-SQL\b/i, /\bPL\/?pgSQL\b/i],
+  "Node/Express": [/^Express\b/i],
+  "REST APIs": [/\bREST\b/i, /\bWeb API\b/i],
+};
+
+/** Adds implied skills to the direct matches of one project, in one pass up to a fixed point. */
+function addImplied(direct: Set<string>, tech: string[]): Set<string> {
+  const found = new Set(direct);
+  // A project that lists TypeScript and not JavaScript gets TS where JS would be implied.
+  const jsTarget = direct.has("TS") && !direct.has("JS") ? "TS" : "JS";
+  const resolve = (skill: string) => (skill === "JS" ? jsTarget : skill);
+
+  for (const [skill, patterns] of Object.entries(IMPLIES_FROM_TECH)) {
+    if (tech.some((text) => patterns.some((pattern) => pattern.test(text.trim())))) {
+      found.add(resolve(skill));
+    }
+  }
+
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const [skill, sources] of Object.entries(IMPLIES_FROM_SKILL)) {
+      const target = resolve(skill);
+      if (!found.has(target) && sources.some((source) => found.has(source))) {
+        found.add(target);
+        changed = true;
+      }
+    }
+  }
+  return found;
+}
+
 const skillsByTech = new Map<string, string[]>();
 const skillsByTitle = new Map<string, string[]>();
 const titlesBySkill = new Map<string, string[]>();
@@ -104,7 +175,8 @@ for (const project of projects) {
       found.add(skill);
     }
   }
-  const ordered = allSkills.filter((skill) => found.has(skill));
+  const withImplied = addImplied(found, project.tech);
+  const ordered = allSkills.filter((skill) => withImplied.has(skill));
   skillsByTitle.set(project.title, ordered);
   for (const skill of ordered) {
     titlesBySkill.get(skill)?.push(project.title);
