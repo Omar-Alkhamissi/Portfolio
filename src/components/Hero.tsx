@@ -46,8 +46,12 @@ export function Hero() {
         animate="show"
         className="section"
       >
-        <motion.p variants={item} className="text-14 text-fg-muted">
-          {site.location} · Available for opportunities
+        <motion.p
+          variants={item}
+          className="flex flex-wrap gap-x-4 text-14 text-fg-muted"
+        >
+          <span>{site.location}</span>
+          <span>Available for opportunities</span>
         </motion.p>
 
         <motion.h1

@@ -6,16 +6,16 @@ const LazyProjectGraph = lazy(() =>
   import("./ProjectGraph").then((module) => ({ default: module.ProjectGraph })),
 );
 
-// Reserves the final height of the toggles, map and reading column so the
-// page does not jump when the graph mounts.
+// Reserves the height of the map and the catalogue so the page does not
+// jump when the graph mounts.
 function GraphPlaceholder() {
   return (
-    <div className="select-none" aria-hidden="true">
-      <div className="h-[22px]" />
-      <div className="mt-6 grid gap-8 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-10">
-        <div className="h-[460px] lg:h-[clamp(420px,70vh,680px)]" />
-        <div className="h-[460px] rounded-[8px] border border-line bg-surface lg:h-[clamp(420px,70vh,680px)]" />
-      </div>
+    <div
+      className="grid select-none items-start gap-8 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-10"
+      aria-hidden="true"
+    >
+      <div className="h-[460px] lg:h-[clamp(420px,70vh,680px)]" />
+      <div className="h-[420px] rounded-[8px] border border-line bg-surface" />
     </div>
   );
 }

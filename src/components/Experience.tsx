@@ -31,9 +31,9 @@ export function Experience() {
 
               <div className="max-w-[68ch]">
                 <h3 className="text-21 font-medium text-fg">{item.title}</h3>
-                <p className="mt-1 text-14 text-fg-muted">
-                  {item.org}
-                  {item.location && ` · ${item.location}`}
+                <p className="mt-1 flex flex-wrap gap-x-4 text-14 text-fg-muted">
+                  <span>{item.org}</span>
+                  {item.location && <span>{item.location}</span>}
                 </p>
                 <ul className="mt-4 list-disc space-y-2 pl-5 text-16 text-fg-muted marker:text-fg-faint">
                   {item.bullets.map((b) => (

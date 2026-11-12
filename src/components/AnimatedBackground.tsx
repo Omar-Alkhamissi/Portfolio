@@ -4,6 +4,7 @@ import {
   useAdaptivePerformanceProfile,
   usePerformanceDiagnosticFlags,
 } from "../lib/performance";
+import { getMotionOff, useMotionOff } from "../lib/motion";
 
 /**
  * Animated background: a painted nebula band with a three-layer starfield.
@@ -15,8 +16,11 @@ import {
  *   vertically, so parallax is just an offset per layer.
  * - Nothing drifts. The composite is redrawn only on scroll, resize or a slow
  *   twinkle tick (12fps or less) for about 4 percent of the stars.
- * - Reduced motion: fully static. Hidden tab: twinkle paused.
+ * - Motion off (the site motion switch): fully static. Hidden
+ *   tab: twinkle paused.
  * - Graph drag: twinkle paused so the graph gets the frame budget.
+ * - A rare meteor (every 18 to 40 seconds) is drawn on the star composite pass
+ *   for the 500 to 700 ms it lives. Never on lite, hidden, paused or dragging.
  */
 
 const NEBULA_SEED = 1931;
@@ -31,6 +35,19 @@ const TWINKLE_SHARE = 0.04;
 const TWINKLE_MIN_INTERVAL_MS = 1000 / 12;
 const NEBULA_FADE_MS = 700;
 const NEBULA_RESIZE_DEBOUNCE_MS = 250;
+const METEOR_MIN_GAP_MS = 18000;
+const METEOR_MAX_GAP_MS = 40000;
+
+type Meteor = {
+  x: number;
+  y: number;
+  dx: number;
+  dy: number;
+  travel: number;
+  length: number;
+  start: number;
+  duration: number;
+};
 
 // Star colours (canvas only): mostly white, a few warm, a few blue.
 const STAR_WHITE = "#F4F6FA";
@@ -363,6 +380,13 @@ export function AnimatedBackground() {
   const diagnostics = usePerformanceDiagnosticFlags();
   const graphDragRef = useRef(false);
   const graphDragListenerRef = useRef<(() => void) | null>(null);
+  const motionOff = useMotionOff();
+  const motionListenerRef = useRef<(() => void) | null>(null);
+
+  // Tell the running canvas effect when the motion switch changes.
+  useEffect(() => {
+    motionListenerRef.current?.();
+  }, [motionOff]);
 
   useEffect(() => {
     const onGraphDrag = (event: Event) => {
@@ -390,8 +414,7 @@ export function AnimatedBackground() {
     const nebulaScale = lite ? 3 : 2;
     const nebulaOctaves = lite ? 5 : 6;
 
-    const reduceMotionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    let reduceMotion = reduceMotionQuery.matches;
+    let reduceMotion = getMotionOff();
 
     let dpr = 1;
     let width = 0;
@@ -407,6 +430,7 @@ export function AnimatedBackground() {
     let nebulaFadeStart = -1;
     let layers: HTMLCanvasElement[] = [];
     let twinklers: Twinkler[] = [];
+    let meteor: Meteor | null = null;
 
     const requiredNebulaExtra = () =>
       Math.ceil(
@@ -554,6 +578,35 @@ export function AnimatedBackground() {
         ctx.fill();
       }
       ctx.globalAlpha = 1;
+
+      if (meteor) {
+        const m = meteor;
+        const t = (now - m.start) / m.duration;
+        if (t >= 1 || reduceMotion) {
+          meteor = null;
+        } else {
+          // Quick fade in, long fade out. The head moves, the tail trails it.
+          const alpha = Math.min(t / 0.15, 1) * Math.min((1 - t) / 0.45, 1);
+          const moved = m.travel * easeOut(Math.max(0, t));
+          const hx = m.x + m.dx * moved;
+          const hy = m.y + m.dy * moved;
+          const tx = hx - m.dx * m.length;
+          const ty = hy - m.dy * m.length;
+          const gradient = ctx.createLinearGradient(tx, ty, hx, hy);
+          gradient.addColorStop(0, "rgba(244, 246, 250, 0)");
+          gradient.addColorStop(1, "rgba(244, 246, 250, 1)");
+          ctx.globalAlpha = alpha;
+          ctx.strokeStyle = gradient;
+          ctx.lineWidth = 1;
+          ctx.lineCap = "butt";
+          ctx.beginPath();
+          ctx.moveTo(tx, ty);
+          ctx.lineTo(hx, hy);
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          needsNextFrame = true;
+        }
+      }
     };
 
     let frameId = 0;
@@ -611,6 +664,53 @@ export function AnimatedBackground() {
       window.clearInterval(twinkleTimer);
       twinkleTimer = 0;
     };
+    // One rare meteor at a time. The timer only exists while a meteor is allowed.
+    let meteorTimer = 0;
+    const meteorAllowed = () =>
+      !lite && !reduceMotion && !document.hidden && !graphDragRef.current;
+    const stopMeteor = () => {
+      window.clearTimeout(meteorTimer);
+      meteorTimer = 0;
+      if (meteor) {
+        meteor = null;
+        requestDraw();
+      }
+    };
+    const spawnMeteor = (now: number) => {
+      const length = 120 + Math.random() * 100;
+      // Shallow diagonal: 12 to 28 degrees below the horizontal, either way.
+      const angle = ((12 + Math.random() * 16) * Math.PI) / 180;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      const travel = 260 + Math.random() * 220;
+      meteor = {
+        x: width * (0.15 + Math.random() * 0.7),
+        y: height * (0.05 + Math.random() * 0.5),
+        dx: Math.cos(angle) * dir,
+        dy: Math.sin(angle),
+        travel,
+        length,
+        start: now,
+        duration: 500 + Math.random() * 200,
+      };
+      requestDraw();
+    };
+    const scheduleMeteor = () => {
+      const gap = METEOR_MIN_GAP_MS + Math.random() * (METEOR_MAX_GAP_MS - METEOR_MIN_GAP_MS);
+      meteorTimer = window.setTimeout(() => {
+        meteorTimer = 0;
+        if (!meteorAllowed()) return;
+        spawnMeteor(performance.now());
+        scheduleMeteor();
+      }, gap);
+    };
+    const syncMeteor = () => {
+      if (!meteorAllowed()) {
+        if (meteorTimer || meteor) stopMeteor();
+      } else if (!meteorTimer) {
+        scheduleMeteor();
+      }
+    };
+
     const syncTwinkle = () => {
       const shouldRun =
         !reduceMotion && !document.hidden && !graphDragRef.current && twinklers.length > 0;
@@ -622,6 +722,7 @@ export function AnimatedBackground() {
       } else if (!shouldRun && twinkleTimer) {
         stopTwinkle();
       }
+      syncMeteor();
     };
 
     const rebuildStars = () => {
@@ -660,30 +761,32 @@ export function AnimatedBackground() {
       if (!document.hidden) requestDraw();
     };
 
-    const onReduceMotionChange = (event: MediaQueryListEvent) => {
-      reduceMotion = event.matches;
+    // Re-reads the one motion switch.
+    const applyMotionState = () => {
+      reduceMotion = getMotionOff();
       if (reduceMotion) nebulaFadeStart = -1;
       syncTwinkle();
       requestDraw();
     };
 
     graphDragListenerRef.current = syncTwinkle;
+    motionListenerRef.current = applyMotionState;
     window.addEventListener("resize", onResize);
     window.addEventListener("scroll", onScroll, { passive: true });
     document.addEventListener("visibilitychange", onVisibility);
-    reduceMotionQuery.addEventListener("change", onReduceMotionChange);
 
     return () => {
       cancelAnimationFrame(frameId);
       stopTwinkle();
+      window.clearTimeout(meteorTimer);
       window.clearTimeout(resizeTimer);
       cancelNebula();
       pageObserver?.disconnect();
       graphDragListenerRef.current = null;
+      motionListenerRef.current = null;
       window.removeEventListener("resize", onResize);
       window.removeEventListener("scroll", onScroll);
       document.removeEventListener("visibilitychange", onVisibility);
-      reduceMotionQuery.removeEventListener("change", onReduceMotionChange);
     };
   }, [performanceProfile.background, disabled]);
 

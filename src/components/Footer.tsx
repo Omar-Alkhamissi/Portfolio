@@ -1,4 +1,5 @@
 import { site } from "../data/site";
+import { MotionToggle } from "./MotionToggle";
 
 export function Footer() {
   return (
@@ -30,6 +31,7 @@ export function Footer() {
         >
           LinkedIn
         </a>
+        <MotionToggle />
       </div>
     </footer>
   );

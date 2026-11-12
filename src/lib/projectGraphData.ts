@@ -34,7 +34,7 @@ export type GraphEdge = {
   source: number;
   target: number;
   weight: number;
-  /** Short human reason, e.g. "React · MongoDB". */
+  /** Short human reason, e.g. "React, MongoDB". */
   reason: string;
 };
 
@@ -421,7 +421,7 @@ export function buildProjectGraph(items: Project[]): ProjectGraphData {
     reason: rankShared(edge.shared, frequency)
       .slice(0, 3)
       .map((tag) => labels.get(tag) ?? tag)
-      .join(" · "),
+      .join(", "),
   }));
 
   const neighbours: GraphNeighbour[][] = items.map(() => []);

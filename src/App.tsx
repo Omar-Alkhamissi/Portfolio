@@ -9,10 +9,12 @@ import { Experience } from "./components/Experience";
 import { Contact } from "./components/Contact";
 import { Footer } from "./components/Footer";
 import { AnimatedBackground } from "./components/AnimatedBackground";
+import { useMotionOff } from "./lib/motion";
 
 export default function App() {
+  const motionOff = useMotionOff();
   return (
-    <MotionConfig reducedMotion="user">
+    <MotionConfig reducedMotion={motionOff ? "always" : "never"}>
       <div className="relative min-h-screen">
         <AnimatedBackground />
         <Navbar />

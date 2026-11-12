@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Menu, X } from "lucide-react";
 import { site } from "../data/site";
 import { cn } from "../lib/cn";
+import { MotionToggle } from "./MotionToggle";
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
 
@@ -115,6 +116,9 @@ export function Navbar() {
               Resume
             </a>
           </li>
+          <li>
+            <MotionToggle />
+          </li>
         </ul>
 
         <button
@@ -168,6 +172,9 @@ export function Navbar() {
                 >
                   Download resume
                 </a>
+              </li>
+              <li className="py-2.5">
+                <MotionToggle />
               </li>
             </ul>
           </motion.div>

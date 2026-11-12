@@ -1,15 +1,19 @@
 import {
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type PointerEvent,
+  type RefObject,
 } from "react";
 import { Github } from "lucide-react";
 import { projects } from "../data/projects";
 import { site } from "../data/site";
 import { cn } from "../lib/cn";
+import { useMotionOff } from "../lib/motion";
 import { SectionHeading } from "./SectionHeading";
 
 type ActivityDay = {
@@ -253,6 +257,7 @@ function formatAxisDate(value: string | undefined) {
   return new Intl.DateTimeFormat("en", {
     day: "numeric",
     month: "short",
+    timeZone: "UTC",
     year: "numeric",
   }).format(date);
 }
@@ -414,6 +419,260 @@ async function fetchPublicGitHubSummary(
   };
 }
 
+const EASE_ENTER = "cubic-bezier(0.05, 0.7, 0.1, 1)";
+const EASE_MOVE = "cubic-bezier(0.2, 0, 0, 1)";
+const MORPH_POINTS = 120;
+const MORPH_MS = 350;
+const AXIS_FADE_MS = 150;
+const SCAN_STEP_MS = 5;
+
+function bezierEase(x1: number, y1: number, x2: number, y2: number) {
+  const cx = 3 * x1;
+  const bx = 3 * (x2 - x1) - cx;
+  const ax = 1 - cx - bx;
+  const cy = 3 * y1;
+  const by = 3 * (y2 - y1) - cy;
+  const ay = 1 - cy - by;
+  const sampleX = (t: number) => ((ax * t + bx) * t + cx) * t;
+  const sampleY = (t: number) => ((ay * t + by) * t + cy) * t;
+
+  return (x: number) => {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+
+    let low = 0;
+    let high = 1;
+    let t = x;
+
+    for (let i = 0; i < 24; i += 1) {
+      const value = sampleX(t);
+
+      if (Math.abs(value - x) < 1e-5) break;
+      if (value < x) low = t;
+      else high = t;
+      t = (low + high) / 2;
+    }
+
+    return sampleY(t);
+  };
+}
+
+const easeMove = bezierEase(0.2, 0, 0, 1);
+
+/** The site motion switch is the only still path. */
+function useStillMotion() {
+  return useMotionOff();
+}
+
+/** True after the element first scrolls into view. Fires once. */
+function useFirstView(ref: RefObject<Element>) {
+  const [seen, setSeen] = useState(false);
+
+  useEffect(() => {
+    const element = ref.current;
+
+    if (seen || !element) {
+      return;
+    }
+
+    if (typeof IntersectionObserver === "undefined") {
+      setSeen(true);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setSeen(true);
+          observer.disconnect();
+        }
+      },
+      { threshold: 0.2 },
+    );
+
+    observer.observe(element);
+
+    return () => observer.disconnect();
+  }, [ref, seen]);
+
+  return seen;
+}
+
+/** One shared hovered date: the heatmap and the line chart read and write it. */
+type HoverState = { date: string; source: "grid" | "chart" } | null;
+
+function createHoverStore() {
+  let state: HoverState = null;
+  const listeners = new Set<() => void>();
+
+  return {
+    get: () => state,
+    set(next: HoverState) {
+      if (next?.date === state?.date && next?.source === state?.source) {
+        return;
+      }
+
+      state = next;
+      listeners.forEach((listener) => listener());
+    },
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+  };
+}
+
+type HoverStore = ReturnType<typeof createHoverStore>;
+
+function useHover(store: HoverStore) {
+  return useSyncExternalStore(store.subscribe, store.get, store.get);
+}
+
+type ShapePoint = { x: number; y: number };
+
+function resamplePoints(points: ChartPoint[], count: number): ShapePoint[] {
+  if (!points.length) {
+    return [];
+  }
+
+  if (points.length === 1) {
+    return Array.from({ length: count }, () => ({
+      x: points[0].x,
+      y: points[0].y,
+    }));
+  }
+
+  const last = points.length - 1;
+
+  return Array.from({ length: count }, (_, index) => {
+    const position = (index / (count - 1)) * last;
+    const from = Math.floor(position);
+    const to = Math.min(last, from + 1);
+    const amount = position - from;
+
+    return {
+      x: points[from].x + (points[to].x - points[from].x) * amount,
+      y: points[from].y + (points[to].y - points[from].y) * amount,
+    };
+  });
+}
+
+function lerpShape(from: ShapePoint[], to: ShapePoint[], amount: number) {
+  return to.map((point, index) => {
+    const start = from[index] ?? point;
+
+    return {
+      x: start.x + (point.x - start.x) * amount,
+      y: start.y + (point.y - start.y) * amount,
+    };
+  });
+}
+
+function shapeToPath(shape: ShapePoint[]) {
+  return shape
+    .map(
+      (point, index) =>
+        `${index === 0 ? "M" : "L"} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`,
+    )
+    .join(" ");
+}
+
+type AxisLabel = {
+  anchor: "start" | "middle" | "end";
+  text: string;
+  x: number;
+  y: number;
+};
+
+/** Axis labels crossfade when their text changes, and only then. */
+function AxisLabels({
+  labels,
+  still,
+}: {
+  labels: AxisLabel[];
+  still: boolean;
+}) {
+  const signature = labels
+    .map((label) => `${label.anchor}:${label.text}`)
+    .join("|");
+  const latest = useRef(labels);
+  const [state, setState] = useState<{
+    generation: number;
+    leaving: AxisLabel[] | null;
+    signature: string;
+  }>({ generation: 0, leaving: null, signature });
+
+  if (state.signature !== signature) {
+    setState({
+      generation: state.generation + 1,
+      leaving: still ? null : latest.current,
+      signature,
+    });
+  }
+
+  useEffect(() => {
+    latest.current = labels;
+  });
+
+  useEffect(() => {
+    if (!state.leaving) {
+      return;
+    }
+
+    const timer = window.setTimeout(
+      () => setState((current) => ({ ...current, leaving: null })),
+      AXIS_FADE_MS,
+    );
+
+    return () => window.clearTimeout(timer);
+  }, [state.generation, state.leaving]);
+
+  const renderLabels = (items: AxisLabel[]) =>
+    items.map((label, index) => (
+      <text
+        key={index}
+        x={label.x}
+        y={label.y}
+        className="fill-fg-faint"
+        fontSize="12"
+        textAnchor={label.anchor}
+      >
+        {label.text}
+      </text>
+    ));
+  const animate = !still && state.generation > 0;
+
+  return (
+    <>
+      {state.leaving ? (
+        <g
+          key={`out-${state.generation}`}
+          style={{
+            animation: `stats-axis-out ${AXIS_FADE_MS}ms ${EASE_MOVE} both`,
+          }}
+        >
+          {renderLabels(state.leaving)}
+        </g>
+      ) : null}
+      <g
+        key={`in-${state.generation}`}
+        style={
+          animate
+            ? {
+                animation: `stats-axis-in ${AXIS_FADE_MS}ms ${EASE_MOVE} both`,
+              }
+            : undefined
+        }
+      >
+        {renderLabels(labels)}
+      </g>
+    </>
+  );
+}
+
 const HEAT_STEPS = [
   "bg-line",
   "bg-star/25",
@@ -444,6 +703,7 @@ function formatShortDate(value: string) {
     day: "numeric",
     month: "short",
     timeZone: "UTC",
+    year: "numeric",
   }).format(date);
 }
 
@@ -499,11 +759,22 @@ function monthLabels(weeks: HeatCell[][]) {
   return labels;
 }
 
-function ContributionGrid({ days }: { days: ActivityDay[] }) {
+function ContributionGrid({
+  days,
+  hoverStore,
+}: {
+  days: ActivityDay[];
+  hoverStore: HoverStore;
+}) {
   const weeks = useMemo(() => buildWeeks(days), [days]);
   const labels = useMemo(() => monthLabels(weeks), [weeks]);
   const maxCount = Math.max(1, ...days.map((day) => day.count));
+  const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const still = useStillMotion();
+  const seen = useFirstView(rootRef);
+  const revealed = seen || still;
+  const hover = useHover(hoverStore);
   const gridRef = useRef<HTMLDivElement>(null);
   const [focusIndex, setFocusIndex] = useState(days.length - 1);
   const [tip, setTip] = useState<{
@@ -565,7 +836,7 @@ function ContributionGrid({ days }: { days: ActivityDay[] }) {
   const total = days.reduce((sum, day) => sum + day.count, 0);
 
   return (
-    <div>
+    <div ref={rootRef}>
       <p className="mb-4 text-sm text-fg-muted">
         {formatNumber(total)} contributions on {activeDays} days, across the
         last {days.length} days
@@ -604,7 +875,13 @@ function ContributionGrid({ days }: { days: ActivityDay[] }) {
               aria-label="Contribution heatmap, one square per day. Use the arrow keys to move between days."
               className="grid grid-flow-col auto-cols-[11px] gap-[3px]"
               onKeyDown={handleKeyDown}
-              onPointerLeave={() => setTip(null)}
+              onPointerLeave={() => {
+                setTip(null);
+
+                if (hoverStore.get()?.source === "grid") {
+                  hoverStore.set(null);
+                }
+              }}
             >
               {weeks.map((week, weekIndex) => (
                 <div
@@ -617,6 +894,8 @@ function ContributionGrid({ days }: { days: ActivityDay[] }) {
                     }
 
                     const index = weekIndex * 7 + rowIndex - offset;
+                    const outlined =
+                      hover?.source === "chart" && hover.date === cell.date;
 
                     return (
                       <span
@@ -626,17 +905,32 @@ function ContributionGrid({ days }: { days: ActivityDay[] }) {
                         data-index={index}
                         tabIndex={index === focusIndex ? 0 : -1}
                         className={cn(
-                          "h-[11px] w-[11px] rounded-[2px] outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-star",
+                          "relative h-[11px] w-[11px] rounded-[2px] outline-offset-2 hover:z-10 hover:scale-[1.3] focus-visible:z-10 focus-visible:scale-[1.3] focus-visible:outline focus-visible:outline-2 focus-visible:outline-star",
                           HEAT_STEPS[heatLevel(cell.count, maxCount)],
+                          outlined && "z-10 outline outline-1 outline-star",
                         )}
-                        onPointerEnter={(event) =>
-                          showTip(event.currentTarget, cell)
-                        }
+                        style={{
+                          opacity: revealed ? 1 : 0,
+                          transition: still
+                            ? "none"
+                            : `opacity 200ms ${EASE_ENTER} ${weekIndex * SCAN_STEP_MS}ms, transform 150ms ${EASE_MOVE}`,
+                        }}
+                        onPointerEnter={(event) => {
+                          showTip(event.currentTarget, cell);
+                          hoverStore.set({ date: cell.date, source: "grid" });
+                        }}
                         onFocus={(event) => {
                           setFocusIndex(index);
                           showTip(event.currentTarget, cell);
+                          hoverStore.set({ date: cell.date, source: "grid" });
                         }}
-                        onBlur={() => setTip(null)}
+                        onBlur={() => {
+                          setTip(null);
+
+                          if (hoverStore.get()?.source === "grid") {
+                            hoverStore.set(null);
+                          }
+                        }}
                       />
                     );
                   })}
@@ -671,17 +965,25 @@ function ContributionGrid({ days }: { days: ActivityDay[] }) {
 
 function ActivityTrace({
   allTimeDays = [],
+  hoverStore,
   totalContributions,
   yearDays = [],
 }: {
   allTimeDays: ActivityDay[];
+  hoverStore: HoverStore;
   totalContributions: number;
   yearDays: ActivityDay[];
 }) {
   const [range, setRange] = useState<ChartRange>("all");
-  const [hoveredPoint, setHoveredPoint] = useState<ChartPoint | null>(null);
   const [width, setWidth] = useState(760);
   const frameRef = useRef<HTMLDivElement>(null);
+  const still = useStillMotion();
+  const seen = useFirstView(frameRef);
+  const drawn = seen || still;
+  const hover = useHover(hoverStore);
+  const rangeRef = useRef(range);
+  const shapeRef = useRef<ShapePoint[]>([]);
+  const [morph, setMorph] = useState<ShapePoint[] | null>(null);
   const height = 240;
   const padding = {
     bottom: 28,
@@ -754,45 +1056,104 @@ function ActivityTrace({
     y: baseline - ratio * innerHeight,
   }));
   const tickRatios = width < 520 ? [0, 0.5, 1] : [0, 1 / 3, 2 / 3, 1];
-  const xTicks = tickRatios.map((ratio, index) => {
-    const dayIndex = Math.min(
-      days.length - 1,
-      Math.max(0, Math.round((days.length - 1) * ratio)),
-    );
+  const axisLabels: AxisLabel[] = [
+    ...yTicks.map(
+      (tick): AxisLabel => ({
+        anchor: "end",
+        text: tick.label,
+        x: padding.left - 8,
+        y: tick.y + 4,
+      }),
+    ),
+    ...tickRatios.flatMap((ratio, index): AxisLabel[] => {
+      const dayIndex = Math.min(
+        days.length - 1,
+        Math.max(0, Math.round((days.length - 1) * ratio)),
+      );
+      const text = formatAxisDate(days[dayIndex]?.date);
 
-    return {
-      label: formatAxisDate(days[dayIndex]?.date),
-      textAnchor:
-        index === 0
-          ? "start"
-          : index === tickRatios.length - 1
-            ? "end"
-            : "middle",
-      x: padding.left + ratio * innerWidth,
-    };
-  });
+      if (!text) {
+        return [];
+      }
+
+      return [
+        {
+          anchor:
+            index === 0
+              ? "start"
+              : index === tickRatios.length - 1
+                ? "end"
+                : "middle",
+          text,
+          x: padding.left + ratio * innerWidth,
+          y: baseline + 20,
+        },
+      ];
+    }),
+  ];
   const activeRangeLabel =
     CHART_RANGE_OPTIONS.find((option) => option.value === range)?.label ??
     "All time";
-  const rangeSummary = [
-    `${formatNumber(displayedTotal)} contributions`,
-    days.length
-      ? `${formatAxisDate(days[0]?.date)} to ${formatAxisDate(
-          days[days.length - 1]?.date,
-        )}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const readout = hoveredPoint
-    ? `${formatAxisDate(hoveredPoint.date)} · ${formatNumber(
-        hoveredPoint.total,
-      )} total · +${formatNumber(hoveredPoint.count)} that day`
-    : rangeSummary;
+  const rangeSummary = days.length
+    ? `${formatNumber(displayedTotal)} contributions from ${formatAxisDate(
+        days[0]?.date,
+      )} to ${formatAxisDate(days[days.length - 1]?.date)}`
+    : `${formatNumber(displayedTotal)} contributions`;
+  const hoveredPoint = hover
+    ? (points.find((point) => point.date === hover.date) ?? null)
+    : null;
+  const markerPoint = morph ? null : hoveredPoint;
+
+  // Range change: morph the line from the old shape to the new one.
+  // Layout effect so the old shape is on screen before the first paint.
+  useLayoutEffect(() => {
+    const next = resamplePoints(points, MORPH_POINTS);
+    const from = shapeRef.current;
+    const rangeChanged = rangeRef.current !== range;
+
+    rangeRef.current = range;
+
+    if (still || !rangeChanged || !from.length || !next.length) {
+      shapeRef.current = next;
+      setMorph(null);
+      return;
+    }
+
+    setMorph(from);
+
+    const startedAt = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const progress = Math.min(1, (now - startedAt) / MORPH_MS);
+      const shape =
+        progress >= 1 ? next : lerpShape(from, next, easeMove(progress));
+
+      shapeRef.current = shape;
+      setMorph(progress >= 1 ? null : shape);
+
+      if (progress < 1) {
+        frame = requestAnimationFrame(tick);
+      }
+    };
+
+    frame = requestAnimationFrame(tick);
+
+    return () => cancelAnimationFrame(frame);
+    // points is derived from path; path covers range, width and data changes.
+  }, [path, range, still]);
+
+  const shownLine = morph ? shapeToPath(morph) : path;
+  const shownArea =
+    morph && morph.length
+      ? `${shownLine} L ${morph[morph.length - 1].x.toFixed(2)} ${baseline} L ${morph[0].x.toFixed(2)} ${baseline} Z`
+      : areaPath;
 
   const handleChartPointerMove = (event: PointerEvent<SVGSVGElement>) => {
     if (!points.length) {
-      setHoveredPoint(null);
+      if (hoverStore.get()?.source === "chart") {
+        hoverStore.set(null);
+      }
+
       return;
     }
 
@@ -807,13 +1168,24 @@ function ActivityTrace({
       Math.max(0, Math.round(ratio * (points.length - 1))),
     );
 
-    setHoveredPoint(points[index]);
+    hoverStore.set({ date: points[index].date, source: "chart" });
   };
 
   return (
     <div>
+      <style>{`@keyframes stats-axis-in{from{opacity:0}to{opacity:1}}@keyframes stats-axis-out{from{opacity:1}to{opacity:0}}`}</style>
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2">
-        <p className="min-h-5 text-sm tabular-nums text-fg-muted">{readout}</p>
+        {hoveredPoint ? (
+          <p className="flex min-h-5 flex-wrap gap-x-4 text-sm tabular-nums text-fg-muted">
+            <span>{formatAxisDate(hoveredPoint.date)}</span>
+            <span>{formatNumber(hoveredPoint.total)} total</span>
+            <span>+{formatNumber(hoveredPoint.count)} that day</span>
+          </p>
+        ) : (
+          <p className="min-h-5 text-sm tabular-nums text-fg-muted">
+            {rangeSummary}
+          </p>
+        )}
         <div
           role="group"
           aria-label="Contribution chart range"
@@ -826,7 +1198,7 @@ function ActivityTrace({
               aria-pressed={option.value === range}
               onClick={() => {
                 setRange(option.value);
-                setHoveredPoint(null);
+                hoverStore.set(null);
               }}
               className="toggle"
             >
@@ -844,67 +1216,65 @@ function ActivityTrace({
           aria-label={`GitHub cumulative contribution curve, ${activeRangeLabel}. ${rangeSummary}`}
           className="block max-w-full touch-pan-y"
           onPointerMove={handleChartPointerMove}
-          onPointerLeave={() => setHoveredPoint(null)}
+          onPointerLeave={() => {
+            if (hoverStore.get()?.source === "chart") {
+              hoverStore.set(null);
+            }
+          }}
         >
           {yTicks.map((tick) => (
-            <g key={`${tick.label}-${tick.y.toFixed(2)}`}>
-              <line
-                x1={padding.left}
-                x2={width - padding.right}
-                y1={tick.y}
-                y2={tick.y}
-                className="stroke-line"
-                strokeWidth="1"
-              />
-              <text
-                x={padding.left - 8}
-                y={tick.y + 4}
-                className="fill-fg-faint"
-                fontSize="12"
-                textAnchor="end"
-              >
-                {tick.label}
-              </text>
-            </g>
+            <line
+              key={tick.y}
+              x1={padding.left}
+              x2={width - padding.right}
+              y1={tick.y}
+              y2={tick.y}
+              className="stroke-line"
+              strokeWidth="1"
+            />
           ))}
-          {xTicks
-            .filter((tick) => tick.label)
-            .map((tick) => (
-              <text
-                key={`${tick.label}-${tick.x.toFixed(1)}`}
-                x={tick.x}
-                y={baseline + 20}
-                className="fill-fg-faint"
-                fontSize="12"
-                textAnchor={tick.textAnchor as "start" | "middle" | "end"}
-              >
-                {tick.label}
-              </text>
-            ))}
-          <path d={path ? areaPath : emptyPath} className="fill-fg/[0.04]" />
+          <AxisLabels labels={axisLabels} still={still} />
           <path
-            d={path || emptyPath}
+            d={path ? shownArea : emptyPath}
+            className="fill-fg/[0.04]"
+            style={{
+              opacity: drawn ? 1 : 0,
+              transition: still
+                ? "none"
+                : `opacity 300ms ${EASE_MOVE} 700ms`,
+            }}
+          />
+          <path
+            d={path ? shownLine : emptyPath}
+            pathLength={1}
             fill="none"
             className="stroke-fg"
             strokeLinecap="round"
             strokeLinejoin="round"
             strokeWidth="1.5"
+            style={{
+              strokeDasharray: "1 2",
+              strokeDashoffset: drawn ? 0 : 1,
+              transition: still
+                ? "none"
+                : `stroke-dashoffset 700ms ${EASE_ENTER}`,
+            }}
           />
-          {hoveredPoint ? (
+          {markerPoint ? (
             <g>
               <line
-                x1={hoveredPoint.x}
-                x2={hoveredPoint.x}
+                x1={markerPoint.x}
+                x2={markerPoint.x}
                 y1={padding.top}
                 y2={baseline}
                 className="stroke-line"
                 strokeWidth="1"
               />
               <circle
-                cx={hoveredPoint.x}
-                cy={hoveredPoint.y}
-                r="3"
-                className="fill-fg"
+                cx={markerPoint.x}
+                cy={markerPoint.y}
+                r="3.5"
+                className="fill-star"
               />
             </g>
           ) : null}
@@ -917,6 +1287,7 @@ function ActivityTrace({
 export function PortfolioStats() {
   const localStats = useMemo(buildLocalStats, []);
   const fallbackActivityDays = useMemo(buildPortfolioActivityFallback, []);
+  const hoverStore = useMemo(createHoverStore, []);
   const [githubSummary, setGithubSummary] = useState<GitHubSummary | null>(
     null,
   );
@@ -1063,12 +1434,13 @@ export function PortfolioStats() {
         </div>
 
         <div className="mt-14">
-          <ContributionGrid days={activityDays} />
+          <ContributionGrid days={activityDays} hoverStore={hoverStore} />
         </div>
 
         <div className="mt-14">
           <ActivityTrace
             allTimeDays={traceDays}
+            hoverStore={hoverStore}
             totalContributions={totalContributionValue}
             yearDays={activityDays}
           />
@@ -1076,13 +1448,13 @@ export function PortfolioStats() {
 
         <div className="mt-14 max-w-[680px]">
           <h3 className="mb-4 text-[21px] font-medium text-fg">Languages</h3>
-          <p className="text-sm text-fg-muted">{topLanguages.join(" · ")}</p>
+          <p className="text-sm text-fg-muted">{topLanguages.join(", ")}</p>
           {contributionMix.length > 0 ? (
             <p className="mt-6 text-sm text-fg-muted">
               Contributions by type:{" "}
               {contributionMix
                 .map((item) => `${formatNumber(item.count)} ${item.label}`)
-                .join(" · ")}
+                .join(", ")}
             </p>
           ) : null}
           <p className="mt-6 text-sm">
