@@ -6,22 +6,20 @@ const LazySolarSystem = lazy(() =>
   import("./SolarSystem").then((module) => ({ default: module.SolarSystem })),
 );
 
+// Reserves roughly the final height so the page does not jump when the orrery mounts.
 function SolarSystemPlaceholder() {
   return (
-    <div className="relative mx-auto w-full max-w-[1180px]" aria-hidden="true">
-      <div className="mb-6 flex flex-wrap items-center justify-center gap-2">
-        {Array.from({ length: 8 }, (_, index) => (
-          <span
-            key={index}
-            className="h-8 w-24 rounded-full border border-white/[0.07] bg-white/[0.025]"
-          />
-        ))}
+    <div
+      className="grid lg:grid-cols-[minmax(0,560px)_1fr] lg:gap-16"
+      aria-hidden="true"
+    >
+      <div className="pb-8 lg:pb-0">
+        <div className="aspect-square w-full max-w-[340px] lg:max-w-[496px]" />
       </div>
-      <div className="relative aspect-square overflow-hidden rounded-2xl border border-white/[0.05] bg-white/[0.015]">
-        <div className="grid-overlay pointer-events-none absolute inset-0 opacity-35" />
-        <div className="absolute left-1/2 top-1/2 h-[46%] w-[46%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-accent/10 bg-accent/[0.035]" />
-        <div className="absolute left-1/2 top-1/2 h-[66%] w-[66%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/[0.045]" />
-        <div className="absolute left-1/2 top-1/2 h-[82%] w-[82%] -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/[0.035]" />
+      <div className="flex flex-col gap-5">
+        {Array.from({ length: 9 }, (_, index) => (
+          <div key={index} className="h-[88px] lg:h-[60px]" />
+        ))}
       </div>
     </div>
   );
@@ -73,20 +71,16 @@ export function Skills() {
     <section
       ref={sectionRef}
       id="skills"
-      className="scroll-mt-20 pt-12 pb-14 sm:pt-16 sm:pb-20"
-      aria-labelledby="skills-heading"
+      className="scroll-mt-20"
+      aria-label="Skills"
     >
       <div className="section">
         <SectionHeading
-          id="skills-heading"
-          eyebrow="02 / Skills"
-          title="A solar system of tools, languages, and frameworks."
-          description="Each ring is a category. Each planet is a skill."
+          title="Skills"
+          description="Each orbit is one group of skills. Point at a group to pause the system and label its planets."
         />
-      </div>
 
-      <div className="mt-8 px-3 sm:mt-10 sm:px-5 lg:px-8">
-        <div className="mx-auto max-w-[1280px]">
+        <div className="mt-6 lg:mt-10">
           {shouldMountSystem ? (
             <Suspense fallback={<SolarSystemPlaceholder />}>
               <LazySolarSystem />

@@ -4,6 +4,8 @@ import { Menu, X } from "lucide-react";
 import { site } from "../data/site";
 import { cn } from "../lib/cn";
 
+const EASE_OUT = [0.23, 1, 0.32, 1] as const;
+
 const ANCHOR_SETTLE_DELAYS_MS = [140, 420, 900, 1700];
 
 const noFill = {
@@ -46,26 +48,6 @@ function scrollToHash(hash: string) {
   }
 }
 
-function LogoMark() {
-  return (
-    <svg
-      viewBox="14 18 38 28"
-      className="h-5 w-5"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M 18 22 L 30 32 L 18 42"
-        stroke="currentColor"
-        strokeWidth={4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <rect x="34" y="40" width="14" height="3" rx="1" fill="currentColor" />
-    </svg>
-  );
-}
-
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
@@ -88,10 +70,8 @@ export function Navbar() {
   return (
     <header
       className={cn(
-        "fixed inset-x-0 top-0 z-50 transition-colors duration-300",
-        scrolled
-          ? "border-b border-white/[0.06] bg-ink-950/95"
-          : "border-b border-transparent"
+        "fixed inset-x-0 top-0 z-50 border-b transition-colors duration-150 ease-out",
+        scrolled ? "border-line bg-space/90" : "border-transparent"
       )}
     >
       <nav
@@ -100,23 +80,17 @@ export function Navbar() {
       >
         <a
           href="#top"
-          className="group flex items-center gap-2.5"
-          aria-label={`${site.name} — home`}
+          onClick={(event) => {
+            event.preventDefault();
+            scrollToHash("#top");
+          }}
+          className="text-16 font-medium text-fg"
+          aria-label={`${site.name}, home`}
         >
-          <span
-            aria-hidden="true"
-            className="grid h-8 w-8 place-items-center rounded-lg border border-white/10 bg-white/[0.03] text-accent transition-colors group-hover:border-accent/40"
-          >
-            <LogoMark />
-          </span>
-          <span className="font-mono text-sm tracking-tight text-zinc-200">
-            {site.name.split(" ")[0]}
-            <span className="text-accent">.</span>
-            {site.name.split(" ")[1]}
-          </span>
+          {site.name}
         </a>
 
-        <ul className="hidden items-center gap-1 md:flex">
+        <ul className="hidden items-center gap-7 md:flex">
           {site.nav.map((item) => (
             <li key={item.href}>
               <a
@@ -125,19 +99,18 @@ export function Navbar() {
                   event.preventDefault();
                   scrollToHash(item.href);
                 }}
-                className="rounded-md px-3 py-2 font-mono text-[13px] text-zinc-400 transition-colors hover:bg-white/[0.04] hover:text-white"
+                className="text-14 text-fg-muted transition-colors duration-150 ease-out hover:text-fg"
               >
-                <span className="text-accent/70">/</span>
                 {item.label}
               </a>
             </li>
           ))}
-          <li className="ml-2">
+          <li>
             <a
               href={site.links.resume}
               download
               {...noFill}
-              className="inline-flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-3 py-1.5 font-mono text-[12px] font-medium text-accent transition-colors hover:border-accent/60 hover:bg-accent/15"
+              className="link text-14"
             >
               Resume
             </a>
@@ -147,12 +120,16 @@ export function Navbar() {
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
-          className="grid h-9 w-9 place-items-center rounded-lg border border-white/10 bg-white/[0.03] text-zinc-200 md:hidden"
+          className="-mr-2 grid h-10 w-10 place-items-center rounded-[6px] text-fg md:hidden"
           aria-label={open ? "Close menu" : "Open menu"}
           aria-expanded={open}
           aria-controls="mobile-menu"
         >
-          {open ? <X size={18} aria-hidden="true" /> : <Menu size={18} aria-hidden="true" />}
+          {open ? (
+            <X size={16} strokeWidth={1.5} aria-hidden="true" />
+          ) : (
+            <Menu size={16} strokeWidth={1.5} aria-hidden="true" />
+          )}
         </button>
       </nav>
 
@@ -160,13 +137,12 @@ export function Navbar() {
         {open && (
           <motion.div
             id="mobile-menu"
-            initial={{ opacity: 0, y: -8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            transition={{ duration: 0.2, ease: "easeOut" }}
-            className="border-t border-white/[0.06] bg-ink-950/95 md:hidden"
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0, transition: { duration: 0.18, ease: EASE_OUT } }}
+            exit={{ opacity: 0, y: -4, transition: { duration: 0.12, ease: EASE_OUT } }}
+            className="border-y border-line bg-surface md:hidden"
           >
-            <ul className="section flex flex-col gap-1 py-4">
+            <ul className="section flex flex-col py-3">
               {site.nav.map((item) => (
                 <li key={item.href}>
                   <a
@@ -176,22 +152,21 @@ export function Navbar() {
                       setOpen(false);
                       scrollToHash(item.href);
                     }}
-                    className="block rounded-md px-3 py-2.5 font-mono text-sm text-zinc-300 hover:bg-white/[0.04] hover:text-white"
+                    className="block py-2.5 text-16 text-fg-muted transition-colors duration-150 ease-out hover:text-fg"
                   >
-                    <span className="text-accent/70">/</span>
                     {item.label}
                   </a>
                 </li>
               ))}
-              <li className="mt-2">
+              <li className="py-2.5">
                 <a
                   href={site.links.resume}
                   download
                   {...noFill}
                   onClick={() => setOpen(false)}
-                  className="block rounded-md border border-accent/30 bg-accent/10 px-3 py-2.5 text-center font-mono text-sm font-medium text-accent"
+                  className="link text-16"
                 >
-                  Download Resume
+                  Download resume
                 </a>
               </li>
             </ul>

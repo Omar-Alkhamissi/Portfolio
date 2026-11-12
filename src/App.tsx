@@ -1,3 +1,4 @@
+import { MotionConfig } from "framer-motion";
 import { Navbar } from "./components/Navbar";
 import { Hero } from "./components/Hero";
 import { PortfolioStats } from "./components/PortfolioStats";
@@ -11,18 +12,21 @@ import { AnimatedBackground } from "./components/AnimatedBackground";
 
 export default function App() {
   return (
-    <div className="relative min-h-screen">
-      <AnimatedBackground />
-      <Navbar />
-      <main>
-        <Hero aside={<About variant="panel" />} />
-        <Skills />
-        <Projects />
-        <PortfolioStats />
-        <Experience />
-        <Contact />
-      </main>
-      <Footer />
-    </div>
+    <MotionConfig reducedMotion="user">
+      <div className="relative min-h-screen">
+        <AnimatedBackground />
+        <Navbar />
+        <main className="flex flex-col gap-24 pb-24 md:gap-36 md:pb-36">
+          <Hero />
+          <About />
+          <Skills />
+          <Projects />
+          <PortfolioStats />
+          <Experience />
+          <Contact />
+        </main>
+        <Footer />
+      </div>
+    </MotionConfig>
   );
 }

@@ -12,7 +12,6 @@ The production build is deployed to GitHub Pages from `main`. Vite is configured
 - `src/main.tsx` mounts React and resets initial scroll position unless a hash is present.
 - `src/components/` contains section components and the interactive visual systems.
 - `src/components/ProjectGraph.tsx` is the largest and most performance-sensitive component; it builds the project relationship graph from `src/data/projects.ts`.
-- `src/components/ProjectSignals.tsx` renders the lightweight reviewer/instructor evidence cards from `src/data/projectSignals.ts`.
 - `src/components/SolarSystem.tsx` renders the animated skills visualization from `src/data/skills.ts`.
 - `src/components/AnimatedBackground.tsx` owns the canvas starfield/nebula background.
 - `src/data/` is the main content layer for site metadata, project data, skills, and timeline entries.
@@ -44,7 +43,8 @@ The GitHub Pages workflow uses Node 20, `npm ci`, and `npm run build`.
 
 - Use TypeScript, React function components, and named exports for components/data helpers.
 - Follow the existing two-space indentation, double-quoted imports/strings, and semicolon style.
-- Prefer Tailwind utilities and the shared component-layer classes in `src/index.css` (`section`, `glass`, `glass-hover`, `eyebrow`, `text-gradient`, `badge`, `bg-grid`, `grid-overlay`).
+- Prefer Tailwind utilities and the shared component-layer classes in `src/index.css` (`section`, `link`, `btn-primary`, `toggle`).
+- Colour tokens are CSS variables on `:root` in `src/index.css`, mapped in `tailwind.config.js`: `space` (page background), `surface` (solid panels), `line` (hairlines), `fg`, `fg-muted`, `fg-faint` (text), and `star` (the single accent). Use these names only; no inline hex in components outside canvas drawing code. Fonts are IBM Plex Sans and IBM Plex Mono; type sizes are `text-12` to `text-67`.
 - Use `cn` from `src/lib/cn.ts` for conditional class strings when it keeps markup readable.
 - Use Lucide React icons for UI and data-driven icon fields.
 - Keep user-visible content in `src/data/*` when it is portfolio data rather than component structure.

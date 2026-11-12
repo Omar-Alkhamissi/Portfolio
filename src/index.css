@@ -5,19 +5,28 @@
 @layer base {
   :root {
     color-scheme: dark;
-  }
-
-  html {
-    scroll-behavior: smooth;
+    --space: 6 10 18;
+    --surface: 17 20 26;
+    --line: 35 40 51;
+    --fg: 230 233 240;
+    --fg-muted: 163 172 189;
+    --fg-faint: 111 122 142;
+    --star: 242 193 78;
   }
 
   body {
-    @apply bg-ink-950 text-zinc-100 font-sans antialiased;
-    font-feature-settings: "ss01", "cv11";
+    @apply bg-space font-sans text-16 text-fg antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   ::selection {
-    @apply bg-accent/30 text-white;
+    @apply bg-star/30 text-fg;
+  }
+
+  :focus-visible {
+    outline: 2px solid rgb(var(--star));
+    outline-offset: 2px;
   }
 
   ::-webkit-scrollbar {
@@ -25,15 +34,15 @@
     height: 10px;
   }
   ::-webkit-scrollbar-track {
-    background: theme("colors.ink.950");
+    background: rgb(var(--space));
   }
   ::-webkit-scrollbar-thumb {
-    background: theme("colors.ink.700");
+    background: rgb(var(--line));
     border-radius: 8px;
-    border: 2px solid theme("colors.ink.950");
+    border: 2px solid rgb(var(--space));
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: theme("colors.ink.600");
+    background: rgb(var(--fg-faint));
   }
 
   /* Honor reduced motion preferences */
@@ -50,93 +59,31 @@
 }
 
 @layer components {
-  .glass {
-    @apply rounded-2xl border border-white/[0.06] bg-white/[0.03]
-           shadow-glass backdrop-blur-md;
-  }
-
-  .glass-hover {
-    @apply transition-colors duration-300
-           hover:border-white/10 hover:bg-white/[0.05];
-  }
-
   .section {
-    @apply mx-auto max-w-[1280px] px-5 sm:px-6 lg:px-8;
+    @apply mx-auto max-w-[1120px] px-5 sm:px-8;
   }
 
-  .eyebrow {
-    @apply inline-flex items-center gap-2 font-mono text-xs uppercase
-           tracking-[0.18em] text-accent;
+  /* Plain text link: underline in the hairline colour, star on hover. */
+  .link {
+    @apply text-fg underline decoration-line decoration-1 underline-offset-4
+           transition-colors duration-150 ease-out hover:decoration-star;
   }
 
-  .text-gradient {
-    @apply bg-gradient-to-br from-white via-white to-white/60
-           bg-clip-text text-transparent;
+  /* The one primary action per view. */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 rounded-[6px] bg-star px-4 py-2
+           text-14 font-medium text-space transition-transform
+           duration-[120ms] ease-out active:scale-[0.97];
   }
 
-  .badge {
-    @apply inline-flex items-center rounded-full border border-white/[0.08]
-           bg-white/[0.03] px-2.5 py-1 font-mono text-[11px]
-           uppercase tracking-wider text-zinc-300;
+  /* Text toggle for filters and ranges. */
+  .toggle {
+    @apply text-14 text-fg-muted underline decoration-transparent
+           decoration-1 underline-offset-[6px] transition-colors duration-150
+           ease-out hover:text-fg;
   }
 
-  .bg-grid {
-    background-image:
-      linear-gradient(to right, rgba(125, 211, 252, 0.045) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(125, 211, 252, 0.045) 1px, transparent 1px);
-    background-size: 64px 64px;
-    mask-image: radial-gradient(ellipse 80% 60% at 50% 30%, black, transparent 75%);
-    -webkit-mask-image: radial-gradient(
-      ellipse 80% 60% at 50% 30%,
-      black,
-      transparent 75%
-    );
-  }
-
-  .grid-overlay {
-    background-image:
-      linear-gradient(to right, rgba(255, 255, 255, 0.025) 1px, transparent 1px),
-      linear-gradient(to bottom, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
-    background-size: 56px 56px;
-    mask-image: radial-gradient(ellipse 70% 50% at 50% 0%, black, transparent 70%);
-    -webkit-mask-image: radial-gradient(ellipse 70% 50% at 50% 0%, black, transparent 70%);
-  }
-
-  .github-dashboard-main {
-    display: grid;
-    align-items: stretch;
-    gap: 1.25rem;
-    min-width: 0;
-  }
-
-  .github-visual-stack {
-    display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
-    gap: 0.75rem;
-    min-width: 0;
-    height: 100%;
-  }
-
-  .github-stat-rail {
-    display: grid;
-    gap: 1rem;
-    min-width: 0;
-  }
-
-  @media (min-width: 700px) {
-    .github-dashboard-main {
-      grid-template-columns: minmax(248px, 0.34fr) minmax(0, 1fr);
-    }
-
-    .github-stat-rail {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  @media (max-width: 699px) {
-    .github-stat-rail {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
+  .toggle[aria-pressed="true"] {
+    @apply text-fg decoration-star;
   }
 }
-

@@ -6,46 +6,15 @@ const LazyProjectGraph = lazy(() =>
   import("./ProjectGraph").then((module) => ({ default: module.ProjectGraph })),
 );
 
+// Reserves the final height of the toggles, map and reading column so the
+// page does not jump when the graph mounts.
 function GraphPlaceholder() {
   return (
-    <div className="mx-auto max-w-[1280px] select-none space-y-5" aria-hidden="true">
-      <div className="mb-4 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 xl:justify-start">
-        {Array.from({ length: 6 }).map((_, index) => (
-          <span
-            key={index}
-            className="h-4 w-24 rounded-full border border-white/[0.04] bg-white/[0.025]"
-          />
-        ))}
-      </div>
-
-      <div className="glass relative aspect-[16/10] overflow-hidden p-3 sm:p-5 md:p-6">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(125,211,252,0.08),transparent_28%),radial-gradient(circle_at_bottom_right,rgba(125,211,252,0.06),transparent_32%)]" />
-        <div className="grid-overlay pointer-events-none absolute inset-0 opacity-40" />
-        <div className="relative h-full w-full rounded-xl border border-white/[0.04] bg-white/[0.015]" />
-      </div>
-
-      <div className="glass min-h-[640px] p-6 sm:p-7">
-        <div className="h-5 w-28 rounded-full border border-white/[0.05] bg-white/[0.025]" />
-        <div className="mt-5 flex items-start gap-3">
-          <div className="h-11 w-11 rounded-xl border border-accent/20 bg-accent/10" />
-          <div className="min-w-0 flex-1 space-y-3">
-            <div className="h-5 w-52 max-w-full rounded bg-white/[0.04]" />
-            <div className="h-4 w-80 max-w-full rounded bg-white/[0.025]" />
-          </div>
-        </div>
-        <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(260px,0.65fr)]">
-          <div className="h-36 rounded-xl border border-white/[0.05] bg-black/10" />
-          <div className="h-36 rounded-xl border border-white/[0.05] bg-white/[0.02]" />
-        </div>
-        <div className="mt-4 h-32 rounded-xl border border-white/[0.05] bg-black/10" />
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <div
-              key={index}
-              className="h-24 rounded-lg border border-white/[0.045] bg-white/[0.018]"
-            />
-          ))}
-        </div>
+    <div className="select-none" aria-hidden="true">
+      <div className="h-[22px]" />
+      <div className="mt-6 grid gap-8 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-10">
+        <div className="h-[460px] lg:h-[clamp(420px,70vh,680px)]" />
+        <div className="h-[460px] rounded-[8px] border border-line bg-surface lg:h-[clamp(420px,70vh,680px)]" />
       </div>
     </div>
   );
@@ -94,22 +63,15 @@ export function Projects() {
   }, [shouldMountGraph]);
 
   return (
-    <section
-      ref={sectionRef}
-      id="projects"
-      className="scroll-mt-20 pt-14 pb-24 sm:pt-18 sm:pb-32"
-      aria-labelledby="projects-heading"
-    >
+    <section ref={sectionRef} id="projects" className="scroll-mt-20" aria-label="Projects">
       <div className="section">
         <SectionHeading
-          id="projects-heading"
-          eyebrow="03 / Selected Work"
-          title="A graph of projects, linked by stack and concept."
-          description="Each node is a project. Lines connect related work through shared technologies, architecture, data, or platform choices. Hover or tap a node to trace its links and load the details below."
+          title="Projects"
+          description="Each star is a project. Lines join projects that share a stack or an idea. Select one to read its note."
         />
       </div>
 
-      <div className="mt-10 px-3 sm:px-5 lg:px-8">
+      <div className="mx-auto mt-10 max-w-[1320px] px-5 sm:px-8">
         {shouldMountGraph ? (
           <Suspense fallback={<GraphPlaceholder />}>
             <LazyProjectGraph />

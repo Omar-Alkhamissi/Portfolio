@@ -1,18 +1,21 @@
 /** @type {import('tailwindcss').Config} */
 export default {
   content: ["./index.html", "./src/**/*.{js,ts,jsx,tsx}"],
+  future: {
+    hoverOnlyWhenSupported: true,
+  },
   theme: {
     extend: {
       fontFamily: {
         sans: [
-          "Geist",
+          "IBM Plex Sans",
           "ui-sans-serif",
           "system-ui",
           "-apple-system",
           "sans-serif",
         ],
         mono: [
-          "JetBrains Mono",
+          "IBM Plex Mono",
           "ui-monospace",
           "SFMono-Regular",
           "Menlo",
@@ -20,23 +23,31 @@ export default {
         ],
       },
       colors: {
-        ink: {
-          950: "#08090C",
-          900: "#0B0D12",
-          800: "#11141B",
-          700: "#171B24",
-          600: "#1F2430",
+        space: "rgb(var(--space) / <alpha-value>)",
+        surface: "rgb(var(--surface) / <alpha-value>)",
+        line: "rgb(var(--line) / <alpha-value>)",
+        fg: {
+          DEFAULT: "rgb(var(--fg) / <alpha-value>)",
+          muted: "rgb(var(--fg-muted) / <alpha-value>)",
+          faint: "rgb(var(--fg-faint) / <alpha-value>)",
         },
-        accent: {
-          DEFAULT: "#7DD3FC",
-          muted: "#38BDF8",
-          deep: "#0EA5E9",
-        },
+        star: "rgb(var(--star) / <alpha-value>)",
       },
-      boxShadow: {
-        glass:
-          "0 1px 0 0 rgba(255,255,255,0.04) inset, 0 0 0 1px rgba(255,255,255,0.06), 0 20px 40px -20px rgba(0,0,0,0.6)",
-        glow: "0 0 40px -10px rgba(125,211,252,0.35)",
+      fontSize: {
+        "12": ["12px", { lineHeight: "1.5" }],
+        "14": ["14px", { lineHeight: "1.55" }],
+        "16": ["16px", { lineHeight: "1.6" }],
+        "21": ["21px", { lineHeight: "1.35" }],
+        "28": ["28px", { lineHeight: "1.2" }],
+        "38": ["38px", { lineHeight: "1.15" }],
+        "50": ["50px", { lineHeight: "1.1" }],
+        "67": ["67px", { lineHeight: "1.05" }],
+      },
+      letterSpacing: {
+        hero: "-0.01em",
+      },
+      transitionTimingFunction: {
+        out: "cubic-bezier(0.23, 1, 0.32, 1)",
       },
     },
   },

@@ -1,540 +1,393 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { motion, useInView, useReducedMotion } from "framer-motion";
-import type { LucideIcon } from "lucide-react";
 import {
-  Atom,
-  BadgeCheck,
-  Binary,
-  Blocks,
-  Boxes,
-  Braces,
-  Coffee,
-  Database,
-  FileCode2,
-  FileJson2,
-  Flame,
-  FlaskConical,
-  GitBranch,
-  Globe,
-  LayoutGrid,
-  Network,
-  PanelsTopLeft,
-  Puzzle,
-  Radio,
-  Route,
-  Server,
-  ShieldCheck,
-  Smartphone,
-  SplitSquareVertical,
-  SquareCode,
-  Table2,
-  TimerReset,
-  Waypoints,
-  Wind,
-  Workflow,
-  Zap,
-} from "lucide-react";
-import { skillGroups, type SkillGroup } from "../data/skills";
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent,
+} from "react";
+import { useInView, useReducedMotion } from "framer-motion";
+import { skillGroups } from "../data/skills";
 import {
   useAdaptivePerformanceProfile,
   usePerformanceDiagnosticFlags,
 } from "../lib/performance";
 
 /**
- * Solar System view of skills.
+ * Skills as an orrery.
  *
- * - Each SkillGroup becomes an orbital ring at a unique radius.
- * - Skills are planets distributed evenly around their ring.
- * - Each ring rotates at a different speed (Kepler-style — outer = slower).
- * - Clicking a category filter highlights/dims the others.
- *
- * The whole thing is one SVG so it's resolution-independent and accessible.
+ * - Each skill group is one orbit ring, each skill one planet on it.
+ * - All rings turn the same way. Period follows Kepler's third law:
+ *   period = 60s * (r / rInner)^1.5.
+ * - Pointing at a group (ring planet or list row) stops the system and
+ *   labels that group's planets.
+ * - One rAF loop writes transforms straight to SVG refs.
  */
 
-const VIEWBOX = 1180;
+// Square box that just fits the outer ring; labels overflow the SVG instead of padding it.
+const VIEWBOX = 490;
 const CENTER = VIEWBOX / 2;
+const SUN_RADIUS = 6;
+const RING_INNER = 46;
+const RING_STEP = 24;
+const PERIOD_INNER_S = 60;
+const PLANET_RADIUS = 3;
+const PLANET_RADIUS_ACTIVE = 5;
+const HIT_RADIUS = 12;
+const EASE = "cubic-bezier(0.23, 1, 0.32, 1)";
+// Time scale eases to its target with this time constant (about 400ms to settle).
+const TIME_SCALE_TAU_S = 0.13;
 
-// Per-ring radii — packed within viewBox, plenty of breathing room
-const RING_BASE = 118;
-const RING_STEP = 50;
-
-// Outer rings still move slower, but the cadence is fast enough to be visible.
-const periodFor = (i: number) => 18 + i * 8;
-const directionFor = (i: number) => (i % 2 === 0 ? 1 : -1);
-
-const GROUP_ACCENTS: Record<string, string> = {
-  languages: "#7dd3fc",
-  frontend: "#34d399",
-  backend: "#60a5fa",
-  databases: "#fbbf24",
-  mobile: "#fde047",
-  security: "#fb7185",
-  testing: "#22c55e",
-  architecture: "#a78bfa",
-  algorithms: "#f34b7d",
-};
-
-const SKILL_ICONS: Record<string, LucideIcon> = {
-  "C#": Braces,
-  "C++": Binary,
-  Java: Coffee,
-  JS: FileJson2,
-  TS: SquareCode,
-  SQL: Database,
-  HTML: FileCode2,
-  CSS: Wind,
-  React: Atom,
-  "Vue 3": PanelsTopLeft,
-  Quasar: PanelsTopLeft,
-  MUI: LayoutGrid,
-  Tailwind: Wind,
-  Vite: Zap,
-  "ASP.NET": Server,
-  "Node/Express": Network,
-  "REST APIs": Waypoints,
-  gRPC: Workflow,
-  Protobuf: Braces,
-  "Socket.IO": Radio,
-  Swagger: BadgeCheck,
-  "SQL Server": Table2,
-  PostgreSQL: Table2,
-  SQLite: Database,
-  MongoDB: Database,
-  Mongoose: Boxes,
-  Firestore: Flame,
-  "EF Core": Boxes,
-  RN: Smartphone,
-  Expo: Smartphone,
-  Firebase: Flame,
-  "Android APK": Smartphone,
-  "Local-First": Database,
-  JWT: ShieldCheck,
-  bcrypt: ShieldCheck,
-  PBKDF2: ShieldCheck,
-  Stripe: BadgeCheck,
-  Jest: FlaskConical,
-  Supertest: FlaskConical,
-  xUnit: BadgeCheck,
-  "Google Test": FlaskConical,
-  "GitHub Actions": GitBranch,
-  OOP: Blocks,
-  "GoF Patterns": Puzzle,
-  MVC: SplitSquareVertical,
-  Observer: Radio,
-  "N-tier": Workflow,
-  Repository: Boxes,
-  Async: TimerReset,
-  "Algorithm Design": Binary,
-  "Data Structures": Blocks,
-  Parsing: Route,
-  Recursion: GitBranch,
-  "Statistical Analysis": Binary,
-};
-
-type PlanetPosition = {
-  group: SkillGroup;
-  groupIndex: number;
-  ringRadius: number;
-  rotationPeriod: number;
+type Planet = {
+  key: string;
+  groupId: string;
+  groupTitle: string;
   skill: string;
-  skillIndex: number;
-  total: number;
+  ringRadius: number;
+  phase: number;
+  period: number;
 };
 
-function startAngleFor(groupIndex: number) {
-  return -Math.PI / 2 + groupIndex * 0.42;
+function ringRadiusFor(groupIndex: number) {
+  return RING_INNER + groupIndex * RING_STEP;
 }
 
-function buildPositions(groups: SkillGroup[]): PlanetPosition[] {
-  const out: PlanetPosition[] = [];
-  groups.forEach((group, gi) => {
-    const ringRadius = RING_BASE + gi * RING_STEP;
-    const rotationPeriod = periodFor(gi);
+function buildPlanets(): Planet[] {
+  const out: Planet[] = [];
+  skillGroups.forEach((group, gi) => {
+    const ringRadius = ringRadiusFor(gi);
+    const period = PERIOD_INNER_S * Math.pow(ringRadius / RING_INNER, 1.5);
+    const ringPhase = -Math.PI / 2 + gi * 0.7;
     group.items.forEach((skill, si) => {
       out.push({
-        group,
-        groupIndex: gi,
-        ringRadius,
-        rotationPeriod,
+        key: `${group.id}::${skill}`,
+        groupId: group.id,
+        groupTitle: group.title,
         skill,
-        skillIndex: si,
-        total: group.items.length,
+        ringRadius,
+        phase: ringPhase + (si / group.items.length) * Math.PI * 2,
+        period,
       });
     });
   });
   return out;
 }
 
-function planetKey(position: PlanetPosition) {
-  return `${position.group.id}::${position.skill}`;
-}
-
-function planetPositionAt(position: PlanetPosition, orbitTime: number) {
-  const direction = directionFor(position.groupIndex);
-  const orbitAngle =
-    startAngleFor(position.groupIndex) +
-    (position.skillIndex / position.total) * Math.PI * 2 +
-    direction * ((orbitTime / position.rotationPeriod) * Math.PI * 2);
-  const cx = CENTER + position.ringRadius * Math.cos(orbitAngle);
-  const cy = CENTER + position.ringRadius * Math.sin(orbitAngle);
-  const labelRadius = position.ringRadius + 36;
-  const labelX = CENTER + labelRadius * Math.cos(orbitAngle);
-  const labelY = CENTER + labelRadius * Math.sin(orbitAngle) + 4;
-
-  return {
-    cx,
-    cy,
-    labelOffsetX: labelX - cx,
-    labelOffsetY: labelY - cy,
-  };
-}
-
 export function SolarSystem() {
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
-  const [systemEntered, setSystemEntered] = useState(false);
-  const [scrollArmed, setScrollArmed] = useState(false);
-  const systemRef = useRef<HTMLDivElement | null>(null);
+  const [activeSkill, setActiveSkill] = useState<string | null>(null);
+  const [labelUnits, setLabelUnits] = useState(14);
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
+
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const orreryRef = useRef<HTMLDivElement | null>(null);
   const planetRefs = useRef<Map<string, SVGGElement>>(new Map());
   const labelRefs = useRef<Map<string, SVGTextElement>>(new Map());
-  const systemInView = useInView(systemRef, {
-    amount: 0.28,
-    margin: "-8% 0px -12% 0px",
-  });
+  const activeRef = useRef<string | null>(null);
+  const timeRef = useRef(0);
+  const timeScaleRef = useRef(1);
+  const labelUnitsRef = useRef(labelUnits);
+  // How far labels may overflow the SVG on each side, in viewBox units.
+  const bleedRef = useRef({ left: 16, right: 16 });
+  const touchRef = useRef(false);
+
+  const inView = useInView(rootRef, { amount: 0.1 });
   const shouldReduceMotion = useReducedMotion();
   const performanceProfile = useAdaptivePerformanceProfile();
   const diagnostics = usePerformanceDiagnosticFlags();
-  const orbitMotionReduced = Boolean(shouldReduceMotion || diagnostics.staticMode);
-  const positions = useMemo(() => buildPositions(skillGroups), []);
+  const motionStill = Boolean(shouldReduceMotion || diagnostics.staticMode);
+  const planets = useMemo(buildPlanets, []);
 
+  const activate = useCallback((groupId: string, skill: string | null = null) => {
+    activeRef.current = groupId;
+    setActiveGroup(groupId);
+    setActiveSkill(skill);
+  }, []);
+
+  const deactivate = useCallback((groupId: string) => {
+    if (activeRef.current !== groupId) {
+      return;
+    }
+    activeRef.current = null;
+    setActiveGroup(null);
+    setActiveSkill(null);
+  }, []);
+
+  const toggle = useCallback(
+    (groupId: string) => {
+      if (activeRef.current === groupId) {
+        deactivate(groupId);
+      } else {
+        activate(groupId);
+      }
+    },
+    [activate, deactivate],
+  );
+
+  // Writes planet transforms, and label positions for the active group only.
+  const paint = useCallback(() => {
+    const time = timeRef.current;
+    const active = activeRef.current;
+    const fontUnits = labelUnitsRef.current;
+    const bleed = bleedRef.current;
+
+    for (const planet of planets) {
+      const angle = planet.phase + (time / planet.period) * Math.PI * 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const x = CENTER + planet.ringRadius * cos;
+      const y = CENTER + planet.ringRadius * sin;
+      planetRefs.current
+        .get(planet.key)
+        ?.setAttribute("transform", `translate(${x.toFixed(2)} ${y.toFixed(2)})`);
+
+      if (planet.groupId !== active) {
+        continue;
+      }
+      const label = labelRefs.current.get(planet.key);
+      if (!label) {
+        continue;
+      }
+      const labelRadius =
+        planet.ringRadius + PLANET_RADIUS_ACTIVE + 6 + Math.abs(sin) * fontUnits * 0.5;
+      let lx = CENTER + labelRadius * cos;
+      const ly = CENTER + labelRadius * sin;
+      const width = planet.skill.length * fontUnits * 0.56;
+      let anchor: "start" | "middle" | "end" = "middle";
+      if (cos > 0.3) {
+        anchor = "start";
+        lx = Math.min(lx, VIEWBOX + bleed.right - width);
+      } else if (cos < -0.3) {
+        anchor = "end";
+        lx = Math.max(lx, -bleed.left + width);
+      } else {
+        lx = Math.min(
+          Math.max(lx, -bleed.left + width / 2),
+          VIEWBOX + bleed.right - width / 2,
+        );
+      }
+      label.setAttribute("x", lx.toFixed(2));
+      label.setAttribute("y", ly.toFixed(2));
+      label.setAttribute("text-anchor", anchor);
+    }
+  }, [planets]);
+
+  // Keep label text near 12px on screen whatever the orrery width.
   useEffect(() => {
-    if (scrollArmed) {
+    const element = orreryRef.current;
+    if (!element) {
       return;
     }
 
-    const armSolarEntry = () => setScrollArmed(true);
-
-    window.addEventListener("scroll", armSolarEntry, {
-      once: true,
-      passive: true,
-    });
-    window.addEventListener("wheel", armSolarEntry, {
-      once: true,
-      passive: true,
-    });
-    window.addEventListener("touchmove", armSolarEntry, {
-      once: true,
-      passive: true,
-    });
-
-    return () => {
-      window.removeEventListener("scroll", armSolarEntry);
-      window.removeEventListener("wheel", armSolarEntry);
-      window.removeEventListener("touchmove", armSolarEntry);
+    const measure = () => {
+      const width = element.getBoundingClientRect().width;
+      if (width <= 0) {
+        return;
+      }
+      const next = Math.min(26, Math.max(12, (12 * VIEWBOX) / width));
+      labelUnitsRef.current = next;
+      // Stay inside the page padding on mobile; use the free column space on desktop.
+      const wide = width > 400;
+      const unitsPerPx = VIEWBOX / width;
+      bleedRef.current = {
+        left: (wide ? 28 : 16) * unitsPerPx,
+        right: (wide ? 100 : 16) * unitsPerPx,
+      };
+      setLabelUnits(next);
     };
-  }, [scrollArmed]);
 
-  useEffect(() => {
-    if (!systemEntered && scrollArmed && systemInView) {
-      setSystemEntered(true);
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
     }
-  }, [scrollArmed, systemEntered, systemInView]);
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
-    if (!systemEntered || diagnostics.staticMode) {
+    const onVisibility = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, []);
+
+  // Place planets and labels whenever the active group or label size changes.
+  useEffect(() => {
+    paint();
+  }, [paint, activeGroup, labelUnits]);
+
+  useEffect(() => {
+    if (motionStill || !inView || !pageVisible) {
       return;
     }
 
     let frame = 0;
     let lastTick = 0;
     let lastPaint = 0;
-    let orbitTime = 0;
+    let paintedTime = timeRef.current;
     const minFrameMs = 1000 / performanceProfile.skills.maxFps;
     const paintThresholdMs = Math.max(0, minFrameMs - 1);
-
-    const updateOrbit = () => {
-      for (const position of positions) {
-        const key = planetKey(position);
-        const visual = planetRefs.current.get(key);
-        const label = labelRefs.current.get(key);
-
-        if (!visual && !label) {
-          continue;
-        }
-
-        const next = planetPositionAt(position, orbitTime);
-        visual?.setAttribute(
-          "transform",
-          `translate(${next.cx.toFixed(2)} ${next.cy.toFixed(2)})`,
-        );
-        label?.setAttribute("x", next.labelOffsetX.toFixed(2));
-        label?.setAttribute("y", next.labelOffsetY.toFixed(2));
-      }
-    };
 
     const tick = (now: number) => {
       if (!lastTick) {
         lastTick = now;
         lastPaint = now;
-        updateOrbit();
         frame = window.requestAnimationFrame(tick);
         return;
       }
 
       const deltaSeconds = Math.min(Math.max((now - lastTick) / 1000, 0), 0.08);
       lastTick = now;
-      orbitTime += deltaSeconds * (orbitMotionReduced ? 0.25 : 1);
 
-      if (now - lastPaint >= paintThresholdMs) {
+      const target = activeRef.current ? 0 : 1;
+      const current = timeScaleRef.current;
+      let next = current + (target - current) * (1 - Math.exp(-deltaSeconds / TIME_SCALE_TAU_S));
+      if (Math.abs(target - next) < 0.002) {
+        next = target;
+      }
+      timeScaleRef.current = next;
+      timeRef.current += deltaSeconds * next;
+
+      if (timeRef.current !== paintedTime && now - lastPaint >= paintThresholdMs) {
         lastPaint = now;
-        updateOrbit();
+        paintedTime = timeRef.current;
+        paint();
       }
 
       frame = window.requestAnimationFrame(tick);
     };
 
     frame = window.requestAnimationFrame(tick);
-
     return () => window.cancelAnimationFrame(frame);
-  }, [
-    performanceProfile.skills.maxFps,
-    diagnostics.staticMode,
-    orbitMotionReduced,
-    positions,
-    systemEntered,
-  ]);
+  }, [inView, motionStill, pageVisible, paint, performanceProfile.skills.maxFps]);
+
+  const transition = (property: string, ms = 150) =>
+    motionStill && property === "transform" ? "none" : `${property} ${ms}ms ${EASE}`;
+
+  const rowHandlers = (groupId: string) => ({
+    onPointerDown: (event: PointerEvent) => {
+      touchRef.current = event.pointerType === "touch";
+    },
+    onPointerEnter: (event: PointerEvent) => {
+      if (event.pointerType !== "touch") {
+        activate(groupId);
+      }
+    },
+    onPointerLeave: (event: PointerEvent) => {
+      if (event.pointerType !== "touch") {
+        deactivate(groupId);
+      }
+    },
+    onKeyDown: () => {
+      touchRef.current = false;
+    },
+    onFocus: () => {
+      if (!touchRef.current) {
+        activate(groupId);
+      }
+    },
+    onBlur: () => {
+      if (!touchRef.current) {
+        deactivate(groupId);
+      }
+    },
+    onClick: () => {
+      if (touchRef.current) {
+        toggle(groupId);
+      }
+    },
+  });
 
   return (
-    <motion.div
-      ref={systemRef}
-      initial={{ opacity: 0, y: 12 }}
-      whileInView={{ opacity: 1, y: 0 }}
-      viewport={{ once: true, margin: "-80px" }}
-      transition={{ duration: 0.5, ease: "easeOut" }}
-      className="relative"
+    <div
+      ref={rootRef}
+      className="grid lg:grid-cols-[minmax(0,560px)_1fr] lg:gap-16"
     >
-      {/* Category filter chips above the system */}
-      <div className="mb-6 flex flex-wrap items-center justify-center gap-2">
-        <button
-          type="button"
-          onClick={() => setActiveGroup(null)}
-          className={[
-            "rounded-full border px-4 py-1.5 font-mono text-[12px] uppercase tracking-[0.14em] transition-colors",
-            activeGroup === null
-              ? "border-accent/60 bg-accent/15 text-accent"
-              : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-zinc-200",
-          ].join(" ")}
-        >
-          All
-        </button>
-        {skillGroups.map((g) => (
-          <button
-            key={g.id}
-            type="button"
-            onClick={() =>
-              setActiveGroup((cur) => (cur === g.id ? null : g.id))
-            }
-            className={[
-              "inline-flex items-center gap-2 rounded-full border px-4 py-1.5 font-mono text-[12px] uppercase tracking-[0.14em] transition-colors",
-              activeGroup === g.id
-                ? "border-accent/60 bg-accent/15 text-accent"
-                : "border-white/10 bg-white/[0.03] text-zinc-400 hover:text-zinc-200",
-            ].join(" ")}
-          >
-            <g.icon size={13} aria-hidden="true" />
-            {g.title}
-          </button>
-        ))}
-      </div>
-
-      {/* The system itself */}
+      <div className="pb-8 lg:sticky lg:top-24 lg:self-start lg:pb-0">
       <div
-        className="relative mx-auto aspect-square w-full max-w-[1180px]"
+        ref={orreryRef}
+        className="aspect-square w-full max-w-[340px] lg:max-w-[496px]"
       >
         <svg
           viewBox={`0 0 ${VIEWBOX} ${VIEWBOX}`}
-          className="h-full w-full"
-          aria-label="Skills shown as a solar system"
+          className="h-full w-full overflow-visible"
           role="img"
+          aria-label="Skills drawn as a solar system with nine orbits, one for each group of skills"
         >
-          <defs>
-            <radialGradient id="core-glow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#7DD3FC" stopOpacity="0.9" />
-              <stop offset="40%" stopColor="#38BDF8" stopOpacity="0.5" />
-              <stop offset="100%" stopColor="#0EA5E9" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id="planet-grad" cx="35%" cy="35%" r="65%">
-              <stop offset="0%" stopColor="#E0F2FE" />
-              <stop offset="60%" stopColor="#7DD3FC" />
-              <stop offset="100%" stopColor="#0369A1" />
-            </radialGradient>
-            <filter id="planet-blur" x="-50%" y="-50%" width="200%" height="200%">
-              <feGaussianBlur stdDeviation="0.6" />
-            </filter>
-            <filter id="ring-haze" x="-40%" y="-40%" width="180%" height="180%">
-              <feGaussianBlur stdDeviation={performanceProfile.skills.ringHazeBlur} />
-            </filter>
-          </defs>
+          {skillGroups.map((group, gi) => (
+            <circle
+              key={group.id}
+              cx={CENTER}
+              cy={CENTER}
+              r={ringRadiusFor(gi)}
+              fill="none"
+              className="stroke-fg"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+              style={{
+                opacity: activeGroup === group.id ? 0.5 : 0.14,
+                transition: transition("opacity"),
+              }}
+            />
+          ))}
 
-          {/* Ambient outer glow */}
-          <circle
-            cx={CENTER}
-            cy={CENTER}
-            r={446}
-            fill="url(#core-glow)"
-            opacity={performanceProfile.skills.ambientGlowOpacity}
-          />
+          <circle cx={CENTER} cy={CENTER} r={SUN_RADIUS} className="fill-star" />
 
-          {/* Orbit rings */}
-          {skillGroups.map((g, i) => {
-            const r = RING_BASE + i * RING_STEP;
-            const isFiltered = activeGroup !== null;
-            const isActive = activeGroup === null || activeGroup === g.id;
-            const accent = GROUP_ACCENTS[g.id] ?? "#7dd3fc";
-            const hazeOpacity = systemEntered
-              ? isActive
-                ? isFiltered || orbitMotionReduced
-                  ? 0.18
-                  : [0.13, 0.24, 0.15]
-                : isFiltered
-                  ? 0.025
-                  : 0.04
-              : 0;
-            return (
-              <g key={g.id}>
-                <motion.circle
-                  cx={CENTER}
-                  cy={CENTER}
-                  initial={{ r: 0, opacity: 0 }}
-                  animate={{
-                    r: systemEntered ? r : 0,
-                    opacity: hazeOpacity,
-                  }}
-                  transition={{
-                    r: {
-                      duration: orbitMotionReduced ? 0.01 : 0.9,
-                      delay: orbitMotionReduced ? 0 : i * 0.06,
-                      ease: [0.22, 1, 0.36, 1],
-                    },
-                    opacity: isFiltered
-                      ? {
-                          duration: orbitMotionReduced ? 0.01 : 0.24,
-                          ease: "easeOut",
-                        }
-                      : {
-                          duration: orbitMotionReduced ? 0.01 : 5.2 + i * 0.35,
-                          repeat: orbitMotionReduced ? 0 : Infinity,
-                          ease: "easeInOut",
-                        },
-                  }}
-                  fill="none"
-                  stroke={accent}
-                  strokeWidth={24 * performanceProfile.skills.ringHazeStrokeScale}
-                  filter="url(#ring-haze)"
-                />
-                <motion.circle
-                  cx={CENTER}
-                  cy={CENTER}
-                  initial={{ r: 0, opacity: 0 }}
-                  animate={{
-                    r: systemEntered ? r : 0,
-                    opacity: systemEntered ? (isActive ? 1 : 0.35) : 0,
-                  }}
-                  transition={{
-                    r: {
-                      duration: orbitMotionReduced ? 0.01 : 0.9,
-                      delay: orbitMotionReduced ? 0 : i * 0.06,
-                      ease: [0.22, 1, 0.36, 1],
-                    },
-                    opacity: { duration: 0.25, ease: "easeOut" },
-                  }}
-                  fill="none"
-                  stroke={accent}
-                  strokeWidth={1}
-                  strokeOpacity={isActive ? 0.42 : 0.12}
-                />
-              </g>
-            );
-          })}
-
-          {/* Rotating ring groups — each orbits at its own speed */}
-          {skillGroups.map((g, gi) => {
-            const isActive = activeGroup === null || activeGroup === g.id;
-            const accent = GROUP_ACCENTS[g.id] ?? "#7dd3fc";
+          {skillGroups.map((group) => {
+            const groupActive = activeGroup === group.id;
+            const dimmed = activeGroup !== null && !groupActive;
             return (
               <g
-                key={g.id}
-                style={{
-                  opacity: isActive ? 1 : 0.18,
-                  transition: "opacity 300ms ease",
-                }}
+                key={group.id}
+                style={{ opacity: dimmed ? 0.35 : 1, transition: transition("opacity") }}
               >
-                {positions
-                  .filter((p) => p.group.id === g.id)
-                  .map((p) => {
-                    const initial = planetPositionAt(p, 0);
-                    const Icon = SKILL_ICONS[p.skill] ?? Globe;
-                    const key = planetKey(p);
+                {planets
+                  .filter((planet) => planet.groupId === group.id)
+                  .map((planet) => {
+                    const angle = planet.phase;
+                    const x = CENTER + planet.ringRadius * Math.cos(angle);
+                    const y = CENTER + planet.ringRadius * Math.sin(angle);
                     return (
                       <g
-                        key={key}
+                        key={planet.key}
                         ref={(element) => {
                           if (element) {
-                            planetRefs.current.set(key, element);
+                            planetRefs.current.set(planet.key, element);
                           } else {
-                            planetRefs.current.delete(key);
+                            planetRefs.current.delete(planet.key);
                           }
                         }}
-                        opacity={systemEntered ? 1 : 0}
-                        transform={`translate(${initial.cx} ${initial.cy})`}
-                        style={{
-                          transition: orbitMotionReduced
-                            ? "none"
-                            : `opacity 360ms ease ${0.18 + gi * 0.07 + p.skillIndex * 0.018}s`,
+                        transform={`translate(${x.toFixed(2)} ${y.toFixed(2)})`}
+                        onPointerEnter={(event) => {
+                          if (event.pointerType !== "touch") {
+                            activate(group.id, planet.skill);
+                          }
+                        }}
+                        onPointerLeave={(event) => {
+                          if (event.pointerType !== "touch") {
+                            deactivate(group.id);
+                          }
+                        }}
+                        onClick={(event) => {
+                          if ((event.nativeEvent as globalThis.PointerEvent).pointerType === "touch") {
+                            toggle(group.id);
+                          }
                         }}
                       >
-                        <title>{`${p.skill} — ${g.title}`}</title>
-                        <g pointerEvents="none">
-                          <circle
-                            cx={0}
-                            cy={0}
-                            r={20}
-                            fill={accent}
-                            opacity={0.1}
-                          />
-                          <circle
-                            cx={0}
-                            cy={0}
-                            r={17}
-                            fill="rgba(9, 14, 23, 0.92)"
-                            stroke="rgba(255,255,255,0.12)"
-                            strokeWidth={1}
-                          />
-                          <Icon
-                            x={-9.5}
-                            y={-9.5}
-                            width={19}
-                            height={19}
-                            color="#dbeafe"
-                            strokeWidth={2}
-                          />
-                          <text
-                            ref={(element) => {
-                              if (element) {
-                                labelRefs.current.set(key, element);
-                              } else {
-                                labelRefs.current.delete(key);
-                              }
-                            }}
-                            x={initial.labelOffsetX}
-                            y={initial.labelOffsetY}
-                            textAnchor="middle"
-                            className="fill-zinc-300 font-mono"
-                            fontSize="11"
-                            opacity={0.76}
-                          >
-                            {p.skill}
-                          </text>
-                        </g>
+                        <title>{`${planet.skill}, ${planet.groupTitle}`}</title>
+                        <circle r={HIT_RADIUS} className="fill-transparent" />
+                        <circle
+                          r={PLANET_RADIUS}
+                          className="fill-fg"
+                          style={{
+                            transform: `scale(${groupActive ? PLANET_RADIUS_ACTIVE / PLANET_RADIUS : 1})`,
+                            transition: transition("transform"),
+                          }}
+                        />
                       </g>
                     );
                   })}
@@ -542,51 +395,67 @@ export function SolarSystem() {
             );
           })}
 
-          {/* Core star — represents the developer core */}
-          <motion.g
-            initial={{ opacity: 0, scale: 0.65 }}
-            animate={{
-              opacity: systemEntered ? 1 : 0,
-              scale: orbitMotionReduced ? 1 : systemEntered ? [1, 1.05, 1] : 0.65,
-            }}
-            transition={{
-              opacity: { duration: orbitMotionReduced ? 0.01 : 0.35 },
-              scale: {
-                duration: orbitMotionReduced ? 0.01 : 4,
-                repeat: orbitMotionReduced ? 0 : Infinity,
-                ease: "easeInOut",
-              },
-            }}
-            style={{ transformOrigin: `${CENTER}px ${CENTER}px` }}
-          >
-            <circle
-              cx={CENTER}
-              cy={CENTER}
-              r={70}
-              fill="url(#core-glow)"
-              opacity={0.9}
-            />
-            <circle
-              cx={CENTER}
-              cy={CENTER}
-              r={38}
-              fill="#0B0D12"
-              stroke="rgba(125,211,252,0.6)"
-              strokeWidth={1.5}
-            />
-            <SquareCode
-              x={CENTER - 14}
-              y={CENTER - 14}
-              width={28}
-              height={28}
-              color="#7dd3fc"
-              strokeWidth={1.8}
-              aria-hidden="true"
-            />
-          </motion.g>
+          <g pointerEvents="none">
+            {planets.map((planet) => (
+              <text
+                key={planet.key}
+                ref={(element) => {
+                  if (element) {
+                    labelRefs.current.set(planet.key, element);
+                  } else {
+                    labelRefs.current.delete(planet.key);
+                  }
+                }}
+                x={CENTER}
+                y={CENTER}
+                dominantBaseline="central"
+                fontSize={labelUnits}
+                className="fill-fg stroke-space font-sans"
+                strokeWidth={3}
+                strokeLinejoin="round"
+                paintOrder="stroke"
+                aria-hidden="true"
+                style={{
+                  opacity: activeGroup === planet.groupId ? 1 : 0,
+                  transition: transition("opacity"),
+                }}
+              >
+                {planet.skill}
+              </text>
+            ))}
+          </g>
         </svg>
-
       </div>
-    </motion.div>
+      </div>
+
+      <ul className="m-0 flex list-none flex-col gap-5 p-0">
+        {skillGroups.map((group) => (
+          <li
+            key={group.id}
+            tabIndex={0}
+            className="rounded-[6px] outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-star"
+            {...rowHandlers(group.id)}
+          >
+            <h3 className="m-0 text-[16px] font-medium leading-6 text-fg">{group.title}</h3>
+            <p className="m-0 text-[14px] leading-6 text-fg-muted">
+              {group.items.map((skill, index) => (
+                <span key={skill}>
+                  {index > 0 ? " · " : null}
+                  <span
+                    className={
+                      activeGroup === group.id && activeSkill === skill
+                        ? "font-medium text-fg"
+                        : undefined
+                    }
+                  >
+                    {skill}
+                  </span>
+                </span>
+              ))}
+            </p>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
