@@ -725,6 +725,8 @@ export function ConstellationMap({
       const svg = svgRef.current;
       const target = event.target;
       if (!frame || !svg || !(target instanceof Node) || !frame.contains(target)) return;
+      // Ctrl or Cmd plus wheel (and trackpad pinch) is the browser's page zoom: leave it alone.
+      if (event.ctrlKey || event.metaKey) return;
       event.preventDefault();
       event.stopPropagation();
       const rect = svg.getBoundingClientRect();

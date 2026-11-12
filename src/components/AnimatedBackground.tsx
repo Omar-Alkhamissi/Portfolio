@@ -16,13 +16,19 @@ import { getMotionOff, useMotionOff } from "../lib/motion";
  * - Layer A is the main nebula. Layer B is a fainter, finer wisp layer (not on
  *   lite). CSS keyframes (transform only, see index.css) drift them in opposite
  *   directions, so the compositor does the work and no JavaScript runs per frame.
- * - Each star depth layer is pre-rendered to its own offscreen canvas and tiled
- *   vertically, so parallax is just an offset per layer.
- * - The star composite is redrawn only on scroll, resize or a slow
+ * - Each star depth layer is pre-rendered to its own offscreen canvas that tiles
+ *   in both directions (a star near an edge is also painted on the opposite
+ *   edge). Parallax and drift are just a wrapped offset per layer, and the
+ *   composite draws the layer up to four times (the 2 by 2 wrap).
+ * - The stars drift along the nebula band's diagonal, 3, 6 and 10 px/s for the
+ *   far, middle and near layers. While drift runs the composite loop is capped
+ *   at 30fps (full) or 20fps (balanced); only compositing runs, never a
+ *   re-render. On lite the stars stay still and only twinkle (12fps or less).
+ * - Without drift the composite is redrawn only on scroll, resize or a slow
  *   twinkle tick (12fps or less) for about 4 percent of the stars.
  * - Motion off (the site motion switch): fully static, no drift. Hidden
- *   tab: twinkle and drift paused.
- * - Graph drag: twinkle paused so the graph gets the frame budget.
+ *   tab: twinkle and drift paused. The offsets are kept and resume from there.
+ * - Graph drag: twinkle and drift paused so the graph gets the frame budget.
  * - A rare meteor (every 18 to 40 seconds) is drawn on the star composite pass
  *   for the 500 to 700 ms it lives. Never on lite, hidden, paused or dragging.
  */
@@ -34,6 +40,13 @@ const PARALLAX = {
   nebula: 0.04,
   layers: [0.06, 0.09, 0.12],
 } as const;
+
+// Star drift in CSS px/s per depth layer (far, middle, near).
+const DRIFT_PX_PER_S = [3, 6, 10] as const;
+const DRIFT_MAX_DT_MS = 100;
+const DRIFT_FPS_FULL = 30;
+const DRIFT_FPS_BALANCED = 20;
+const STAR_OFFSET_REPORT_MS = 1000;
 
 const TWINKLE_SHARE = 0.04;
 const TWINKLE_MIN_INTERVAL_MS = 1000 / 12;
@@ -405,6 +418,14 @@ function easeOut(x: number) {
   return bez((lo + hi) / 2, y1, y2);
 }
 
+/** Positions to draw a disc of radius r at p so a tile of the given size wraps. */
+function edgeCopies(p: number, r: number, size: number) {
+  const copies = [p];
+  if (p < r) copies.push(p + size);
+  else if (p > size - r) copies.push(p - size);
+  return copies;
+}
+
 function pickStarColor(rand: () => number) {
   const roll = rand();
   if (roll < 0.09) return STAR_WARM;
@@ -472,6 +493,21 @@ export function AnimatedBackground() {
     let layers: HTMLCanvasElement[] = [];
     let twinklers: Twinkler[] = [];
     let meteor: Meteor | null = null;
+    // Star tile size in CSS px (the star canvas size), and the drift state:
+    // one wrapped offset per layer, a unit direction along the band, and the
+    // last drift frame time (0 while drift is stopped).
+    let tileW = 0;
+    let tileH = 0;
+    const driftX = [0, 0, 0];
+    const driftY = [0, 0, 0];
+    let driftUx = 1;
+    let driftUy = 0;
+    let driftLast = 0;
+    let offsetReportedAt = 0;
+    const driftFrameMs =
+      1000 / (performanceProfile.quality === "full" ? DRIFT_FPS_FULL : DRIFT_FPS_BALANCED);
+    const wrapMod = (value: number, size: number) =>
+      size > 0 ? ((value % size) + size) % size : 0;
 
     const requiredNebulaExtra = () =>
       Math.ceil(
@@ -545,8 +581,8 @@ export function AnimatedBackground() {
         let guard = 0;
         while (placed < count && guard < count * 12) {
           guard++;
-          const x = rand() * width;
-          const y = rand() * height;
+          const x = rand() * tileW;
+          const y = rand() * tileH;
           // Denser inside the band, still present everywhere.
           const keep = 0.3 + 0.7 * band(x, y);
           if (rand() > keep) continue;
@@ -573,9 +609,17 @@ export function AnimatedBackground() {
 
           lctx.globalAlpha = a;
           lctx.fillStyle = color;
-          lctx.beginPath();
-          lctx.arc(x, y, r, 0, Math.PI * 2);
-          lctx.fill();
+          // A star near an edge is also painted on the opposite edge so the
+          // layer tiles with no seam.
+          const xs = edgeCopies(x, r, tileW);
+          const ys = edgeCopies(y, r, tileH);
+          for (const cx of xs) {
+            for (const cy of ys) {
+              lctx.beginPath();
+              lctx.arc(cx, cy, r, 0, Math.PI * 2);
+              lctx.fill();
+            }
+          }
         }
       });
     };
@@ -588,6 +632,37 @@ export function AnimatedBackground() {
       canvas.height = Math.floor(height * dpr);
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
+      tileW = canvas.width / dpr;
+      tileH = canvas.height / dpr;
+      // Drift runs along the nebula band's diagonal (the same axis as setDriftAxis).
+      const dx = 1.2 * width;
+      const dy = -0.9 * height;
+      const len = Math.hypot(dx, dy) || 1;
+      driftUx = dx / len;
+      driftUy = dy / len;
+      // Keep the running offsets valid for the new tile size.
+      for (let i = 0; i < driftX.length; i++) {
+        driftX[i] = wrapMod(driftX[i], tileW);
+        driftY[i] = wrapMod(driftY[i], tileH);
+      }
+    };
+
+    // Drift runs on full and balanced only, and under the same rules as twinkle.
+    const driftActive = () =>
+      !lite && !reduceMotion && !document.hidden && !graphDragRef.current && layers.length > 0;
+
+    const advanceDrift = (now: number) => {
+      if (driftLast === 0) {
+        driftLast = now;
+        return;
+      }
+      const dt = Math.min(DRIFT_MAX_DT_MS, Math.max(0, now - driftLast));
+      driftLast = now;
+      for (let i = 0; i < driftX.length; i++) {
+        const step = (DRIFT_PX_PER_S[i] * dt) / 1000;
+        driftX[i] = wrapMod(driftX[i] + driftUx * step, tileW);
+        driftY[i] = wrapMod(driftY[i] + driftUy * step, tileH);
+      }
     };
 
     let needsNextFrame = false;
@@ -605,25 +680,47 @@ export function AnimatedBackground() {
         wrap.style.transform = `translate3d(0, ${-offset}px, 0)`;
       }
 
-      const tileH = canvas.height;
+      if (driftActive()) advanceDrift(now);
+
+      // Each layer tiles in both directions: draw it at its wrapped offset and
+      // at the copies one tile before, so the 2 by 2 wrap covers the canvas.
+      const pixelW = canvas.width;
+      const pixelH = canvas.height;
       layers.forEach((layer, index) => {
-        const shift = ((scrollY * PARALLAX.layers[index] * dpr) % tileH + tileH) % tileH;
-        ctx.drawImage(layer, 0, -shift);
-        if (shift > 0) ctx.drawImage(layer, 0, tileH - shift);
+        const shiftX = wrapMod(driftX[index] * dpr, pixelW);
+        const shiftY = wrapMod((driftY[index] - scrollY * PARALLAX.layers[index]) * dpr, pixelH);
+        const xs = shiftX === 0 ? [0] : [shiftX - pixelW, shiftX];
+        const ys = shiftY === 0 ? [0] : [shiftY - pixelH, shiftY];
+        for (const x of xs) {
+          for (const y of ys) ctx.drawImage(layer, x, y);
+        }
       });
 
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       for (const star of twinklers) {
-        const shift = scrollY * PARALLAX.layers[star.layer];
-        const y = (((star.y - shift) % height) + height) % height;
+        const x = wrapMod(star.x + driftX[star.layer], tileW);
+        const y = wrapMod(
+          star.y + driftY[star.layer] - scrollY * PARALLAX.layers[star.layer],
+          tileH,
+        );
         const wave = reduceMotion ? 1 : 0.55 + 0.45 * Math.sin(now * star.rate + star.phase);
         ctx.globalAlpha = star.a * wave;
         ctx.fillStyle = star.color;
-        ctx.beginPath();
-        ctx.arc(star.x, y, star.r, 0, Math.PI * 2);
-        ctx.fill();
+        for (const cx of edgeCopies(x, star.r, tileW)) {
+          for (const cy of edgeCopies(y, star.r, tileH)) {
+            ctx.beginPath();
+            ctx.arc(cx, cy, star.r, 0, Math.PI * 2);
+            ctx.fill();
+          }
+        }
       }
       ctx.globalAlpha = 1;
+
+      // Debug value for browser checks: the far layer's drift offset, about once a second.
+      if (now - offsetReportedAt >= STAR_OFFSET_REPORT_MS) {
+        offsetReportedAt = now;
+        canvas.dataset.starOffset = `${driftX[0].toFixed(1)},${driftY[0].toFixed(1)}`;
+      }
 
       if (meteor) {
         const m = meteor;
@@ -655,15 +752,31 @@ export function AnimatedBackground() {
       }
     };
 
+    // One composite loop. A requested draw (scroll, resize, twinkle, meteor start)
+    // runs on the next frame. While drift or a meteor runs it keeps going, and
+    // the drift frames are capped by driftFrameMs. Nothing is re-rendered.
     let frameId = 0;
-    const requestDraw = () => {
+    let lastFrameAt = 0;
+    let forced = false;
+    const scheduleFrame = () => {
       if (frameId) return;
       frameId = requestAnimationFrame((now) => {
         frameId = 0;
-        draw(now);
-        // Keep drawing only while the nebula fade-in is running.
-        if (needsNextFrame) requestDraw();
+        const due = forced || needsNextFrame || now - lastFrameAt >= driftFrameMs - 2;
+        if (due) {
+          forced = false;
+          lastFrameAt = now;
+          draw(now);
+        }
+        const drifting = driftActive();
+        if (!drifting) driftLast = 0;
+        // Keep going only while a meteor is flying or the stars drift.
+        if (needsNextFrame || drifting) scheduleFrame();
       });
+    };
+    const requestDraw = () => {
+      forced = true;
+      scheduleFrame();
     };
 
     // The nebula takes a few hundred ms to paint, so it never runs during
@@ -772,8 +885,19 @@ export function AnimatedBackground() {
       // The compositor drift pauses with the tab and during a graph drag.
       const wrap = nebulaWrapRef.current;
       if (wrap) wrap.dataset.paused = document.hidden || graphDragRef.current ? "true" : "false";
+      // While the stars drift, the composite loop already redraws the twinklers.
+      const drifting = driftActive();
+      if (drifting) {
+        scheduleFrame();
+      } else {
+        driftLast = 0;
+      }
       const shouldRun =
-        !reduceMotion && !document.hidden && !graphDragRef.current && twinklers.length > 0;
+        !reduceMotion &&
+        !document.hidden &&
+        !graphDragRef.current &&
+        twinklers.length > 0 &&
+        !drifting;
       if (shouldRun && !twinkleTimer) {
         twinkleTimer = window.setInterval(
           requestDraw,
@@ -791,6 +915,8 @@ export function AnimatedBackground() {
       syncTwinkle();
       requestDraw();
     };
+    // Debug value for browser checks, so it exists before the first report.
+    canvas.dataset.starOffset = "0.0,0.0";
     rebuildStars();
     scheduleNebula(0);
 
@@ -837,6 +963,7 @@ export function AnimatedBackground() {
 
     return () => {
       cancelAnimationFrame(frameId);
+      frameId = 0;
       stopTwinkle();
       window.clearTimeout(meteorTimer);
       window.clearTimeout(resizeTimer);

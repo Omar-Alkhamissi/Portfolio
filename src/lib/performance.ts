@@ -103,9 +103,18 @@ export function getAdaptivePerformanceProfile(): AdaptivePerformanceProfile {
   let quality: PerformanceQuality = "full";
   let qualitySource: AdaptivePerformanceProfile["qualitySource"] = "auto";
 
-  if (pixelArea >= 9_000_000 || cssArea >= 5_000_000 || dpr >= 2.75) {
+  // Browser zoom changes the CSS viewport and the pixel ratio together but leaves
+  // the number of real screen pixels alone, so quality follows real pixels only.
+  // A high pixel ratio still lowers quality on touch devices, where it means a
+  // phone or tablet and not a zoomed-in desktop.
+  const touchDevice =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
+
+  if (pixelArea >= 9_000_000 || (touchDevice && dpr >= 2.75)) {
     quality = "lite";
-  } else if (pixelArea >= 6_000_000 || cssArea >= 3_000_000 || dpr >= 2.5) {
+  } else if (pixelArea >= 6_000_000 || (touchDevice && dpr >= 2.5)) {
     quality = "balanced";
   }
 
