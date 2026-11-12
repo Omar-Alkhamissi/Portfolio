@@ -67,19 +67,34 @@ const TAIL_MIN_DEG = 8;
 const TAIL_MAX_DEG = 40;
 const TAIL_DEG_PER_DEG_S = 40 / 6; // inner ring turns 6 deg/s and gets the longest tail
 
-// Ignition entrance.
-const RING_DRAW_MS = 500;
-const RING_STAGGER_MS = 60;
-const PLANET_IN_MS = 250;
-const SUN_IN_MS = 500;
-const RAMP_DELAY_MS = 600;
-const RAMP_MS = 1200;
+// Entrance: one continuous flow driven by the rAF loop. The sun swells with a ripple, rings
+// spread out from it, planets fly out along spirals while the spin settles from fast to normal.
+const SUN_IN_MS = 700;
+const RIPPLE_MAX_PX = 40;
+const RING_START_MS = 150;
+const RING_STAGGER_MS = 90;
+const RING_GROW_MS = 900;
+// A planet leaves the sun once its ring is this far through its growth.
+const FLIGHT_AFTER_RING_SHARE = 0.4;
+const PLANET_STAGGER_MS = 25;
+const FLIGHT_MS = 1100;
+const FLIGHT_FADE_SHARE = 0.15;
+const FLIGHT_SCALE_FROM = 0.6;
+const TAIL_FADE_FROM = 0.6;
+const SPIN_START = 3.5;
+const SPIN_RELAX_TAU_S = 0.25;
+const ENTRANCE_SETTLE_MS = 300;
+// Speed eases in over this long when motion is switched on after the entrance already ran.
+const MOTION_RAMP_MS = 1200;
+
+type Phase = "hidden" | "entering" | "rest";
 
 type Planet = {
   key: string;
   groupId: string;
   groupTitle: string;
   groupIndex: number;
+  order: number;
   skill: string;
   radius: number;
   ringRadius: number;
@@ -130,6 +145,30 @@ function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
 }
 
 const easeMove = cubicBezier(0.2, 0, 0, 1);
+const easeEnter = cubicBezier(0.05, 0.7, 0.1, 1);
+
+function ringStartMs(groupIndex: number) {
+  return RING_START_MS + groupIndex * RING_STAGGER_MS;
+}
+
+function flightStartMs(groupIndex: number, order: number) {
+  return (
+    ringStartMs(groupIndex) + FLIGHT_AFTER_RING_SHARE * RING_GROW_MS + order * PLANET_STAGGER_MS
+  );
+}
+
+// Whole entrance: the last planet lands, then the spin gets a moment to settle to normal.
+const ENTRANCE_MS = Math.min(
+  3200,
+  Math.max(
+    2800,
+    Math.max(
+      ...skillGroups.map(
+        (group, gi) => flightStartMs(gi, Math.max(0, group.items.length - 1)) + FLIGHT_MS,
+      ),
+    ) + ENTRANCE_SETTLE_MS,
+  ),
+);
 
 const MOST_PROJECTS = Math.max(
   1,
@@ -139,6 +178,16 @@ const MOST_PROJECTS = Math.max(
 function planetRadiusFor(skill: string) {
   const share = Math.sqrt(skillProjectCount(skill) / MOST_PROJECTS);
   return PLANET_RADIUS + (PLANET_RADIUS_MAX - PLANET_RADIUS) * share;
+}
+
+function mapRef<T extends Element>(map: Map<string, T>, key: string) {
+  return (element: T | null) => {
+    if (element) {
+      map.set(key, element);
+    } else {
+      map.delete(key);
+    }
+  };
 }
 
 function projectsLine(skill: string) {
@@ -165,6 +214,7 @@ function buildPlanets(): Planet[] {
         groupId: group.id,
         groupTitle: group.title,
         groupIndex: gi,
+        order: si,
         skill,
         radius: planetRadiusFor(skill),
         ringRadius,
@@ -202,10 +252,18 @@ export function SolarSystem() {
   const orreryRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
   const sunRef = useRef<HTMLSpanElement | null>(null);
+  const sunBodyRef = useRef<HTMLSpanElement | null>(null);
+  const rippleRef = useRef<SVGCircleElement | null>(null);
+  const ringWrapRefs = useRef<(SVGGElement | null)[]>([]);
+  const ringRefs = useRef<(SVGCircleElement | null)[]>([]);
   const widthRef = useRef(0);
   const labelLayerRef = useRef<SVGGElement | null>(null);
   const rayRef = useRef<SVGLineElement | null>(null);
   const planetRefs = useRef<Map<string, SVGGElement>>(new Map());
+  // Per planet: the group that carries its orbit radius, the body (fade and scale) and the tail.
+  const atRefs = useRef<Map<string, SVGGElement>>(new Map());
+  const bodyRefs = useRef<Map<string, SVGGElement>>(new Map());
+  const tailRefs = useRef<Map<string, SVGGElement>>(new Map());
   const labelRefs = useRef<Map<string, SVGTextElement>>(new Map());
   const activeRef = useRef<string | null>(null);
   const sourceRef = useRef<"list" | "orrery">("list");
@@ -215,8 +273,16 @@ export function SolarSystem() {
   const tiltRef = useRef(TILT_DEG);
   const tiltFrameRef = useRef(0);
   const tailLevelRef = useRef(-1);
-  // null = ignition not started yet (orbits held still); a time = ramp start.
-  const igniteStartRef = useRef<number | null>(null);
+  // hidden: nothing drawn yet; entering: the entrance clock runs; rest: normal orrery.
+  const phaseRef = useRef<Phase>("hidden");
+  const entranceMsRef = useRef(0);
+  // False after the phase changes, so the next paint rewrites every entrance-driven attribute.
+  const restAppliedRef = useRef(false);
+  // Angular speed multiplier: SPIN_START at first, settling to 1.
+  const spinRef = useRef(1);
+  const rampMsRef = useRef(MOTION_RAMP_MS);
+  const prevStillRef = useRef<boolean | null>(null);
+  const finishRef = useRef<() => void>(() => {});
   const depthOnRef = useRef(true);
   const labelUnitsRef = useRef(labelUnits);
   // How far labels may overflow the SVG on each side, in viewBox units.
@@ -241,8 +307,15 @@ export function SolarSystem() {
   const rayKey = activeGroup && activeSkill ? `${activeGroup}::${activeSkill}` : null;
   rayKeyRef.current = rayKey;
 
+  const setPhase = useCallback((phase: Phase) => {
+    phaseRef.current = phase;
+    restAppliedRef.current = false;
+    rootRef.current?.setAttribute("data-orrery-phase", phase);
+  }, []);
+
   const activate = useCallback(
     (groupId: string, skill: string | null = null, source: "list" | "orrery" = "list") => {
+      finishRef.current();
       activeRef.current = groupId;
       sourceRef.current = source;
       setActiveGroup(groupId);
@@ -285,8 +358,78 @@ export function SolarSystem() {
     const tiltFactor = tiltRef.current / TILT_DEG;
     const depthOn = depthOnRef.current;
     const rayKeyNow = rayKeyRef.current;
+    const phase = phaseRef.current;
+    const flying = phase !== "rest";
+    const ms = phase === "hidden" ? 0 : entranceMsRef.current;
+    const writeParts = flying || !restAppliedRef.current;
+
+    if (writeParts) {
+      // Sun, its ripple and the rings. Rings grow from the sun's size to their own.
+      const unitsPerPx = widthRef.current > 0 ? VIEWBOX / widthRef.current : 1;
+      const sunUnits = SUN_RADIUS * unitsPerPx;
+      const sunT = clamp(ms / SUN_IN_MS, 0, 1);
+      const sunE = flying ? easeEnter(sunT) : 1;
+      const sunBody = sunBodyRef.current;
+      if (sunBody) {
+        sunBody.style.transform = `scale(${sunE.toFixed(3)})`;
+        sunBody.style.opacity = sunE.toFixed(3);
+      }
+      const ripple = rippleRef.current;
+      if (ripple) {
+        const rippleOn = flying && ms > 0 && sunT < 1;
+        ripple.setAttribute(
+          "r",
+          (SUN_RADIUS + (RIPPLE_MAX_PX - SUN_RADIUS) * easeEnter(sunT)).toFixed(2),
+        );
+        ripple.setAttribute("opacity", rippleOn ? (0.5 * (1 - sunT)).toFixed(3) : "0");
+      }
+      skillGroups.forEach((_, gi) => {
+        const finalRadius = ringRadiusFor(gi);
+        const t = flying ? clamp((ms - ringStartMs(gi)) / RING_GROW_MS, 0, 1) : 1;
+        const e = flying ? easeEnter(t) : 1;
+        ringRefs.current[gi]?.setAttribute(
+          "r",
+          (sunUnits + (finalRadius - sunUnits) * e).toFixed(2),
+        );
+        const wrap = ringWrapRefs.current[gi];
+        if (wrap) {
+          if (flying) {
+            wrap.setAttribute("opacity", e.toFixed(3));
+          } else {
+            wrap.removeAttribute("opacity");
+          }
+        }
+      });
+    }
 
     for (const planet of planets) {
+      if (writeParts) {
+        const at = atRefs.current.get(planet.key);
+        const body = bodyRefs.current.get(planet.key);
+        const tail = tailRefs.current.get(planet.key);
+        if (flying) {
+          const p = clamp((ms - flightStartMs(planet.groupIndex, planet.order)) / FLIGHT_MS, 0, 1);
+          // Gentler curve for distance so the trip stays visible; the strong one only for scale.
+          const e = easeEnter(p);
+          const travel = 1 - (1 - p) * (1 - p);
+          at?.setAttribute("transform", `translate(${(planet.ringRadius * travel).toFixed(2)} 0)`);
+          body?.setAttribute("opacity", smoothstep(0, FLIGHT_FADE_SHARE, p).toFixed(3));
+          body?.setAttribute(
+            "transform",
+            `scale(${(FLIGHT_SCALE_FROM + (1 - FLIGHT_SCALE_FROM) * e).toFixed(3)})`,
+          );
+          // The tail is drawn at the final radius, so it shrinks with the planet's distance.
+          tail?.setAttribute("opacity", smoothstep(TAIL_FADE_FROM, 1, p).toFixed(3));
+          tail?.setAttribute("transform", `scale(${Math.max(travel, 0.001).toFixed(3)})`);
+        } else {
+          at?.setAttribute("transform", `translate(${planet.ringRadius} 0)`);
+          body?.removeAttribute("opacity");
+          body?.removeAttribute("transform");
+          tail?.removeAttribute("opacity");
+          tail?.removeAttribute("transform");
+        }
+      }
+
       const angle = planet.phase + (time / planet.period) * Math.PI * 2;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
@@ -339,7 +482,23 @@ export function SolarSystem() {
       label.setAttribute("y", ly.toFixed(2));
       label.setAttribute("text-anchor", anchor);
     }
+
+    if (!flying) {
+      restAppliedRef.current = true;
+    }
   }, [planets]);
+
+  // Ends the entrance where it stands and shows the resting orrery.
+  const finishEntrance = useCallback(() => {
+    if (phaseRef.current === "rest") {
+      return;
+    }
+    entranceMsRef.current = ENTRANCE_MS;
+    setPhase("rest");
+    setIgnited(true);
+    paint();
+  }, [paint, setPhase]);
+  finishRef.current = finishEntrance;
 
   // Applies the current tilt to the svg and fades labels in only when nearly face-on. Below lg
   // it also sizes the box to the disc: the tilted ring is shorter and its near edge reaches
@@ -487,31 +646,61 @@ export function SolarSystem() {
     return () => window.removeEventListener("keydown", onKey);
   }, [activeGroup, deactivate]);
 
-  // Ignition fires once, when the orrery first scrolls into view.
+  // Everything starts hidden. Motion off shows the resting orrery at once; motion switched on
+  // again after the entrance already ran eases the speed in instead of starting hard.
+  useLayoutEffect(() => {
+    const wasStill = prevStillRef.current;
+    prevStillRef.current = motionStill;
+    if (motionStill) {
+      entranceMsRef.current = ENTRANCE_MS;
+      spinRef.current = 1;
+      setPhase("rest");
+    } else if (wasStill === null) {
+      setPhase("hidden");
+    } else if (wasStill && phaseRef.current === "rest") {
+      rampMsRef.current = 0;
+    }
+    paint();
+  }, [motionStill, paint, setPhase]);
+
+  // The entrance starts once, when enough of the orrery is on screen.
   useEffect(() => {
     if (ignited) {
       return;
     }
     const element = orreryRef.current;
     if (motionStill || !element || !("IntersectionObserver" in window)) {
-      igniteStartRef.current = -1e9;
+      finishEntrance();
       setIgnited(true);
       return;
     }
 
     const observer = new IntersectionObserver(
       ([entry]) => {
-        if (entry.isIntersecting) {
-          igniteStartRef.current = performance.now();
+        if (
+          entry.isIntersecting &&
+          entry.intersectionRatio >= 0.34 &&
+          phaseRef.current === "hidden"
+        ) {
+          entranceMsRef.current = 0;
+          spinRef.current = SPIN_START;
+          setPhase("entering");
           setIgnited(true);
           observer.disconnect();
         }
       },
-      { threshold: 0.4 },
+      { threshold: 0.35 },
     );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [ignited, motionStill]);
+  }, [ignited, motionStill, finishEntrance, setPhase]);
+
+  // A focused skill (from the map) ends the entrance too.
+  useEffect(() => {
+    if (focusedSkill) {
+      finishEntrance();
+    }
+  }, [focusedSkill, finishEntrance]);
 
   // Swing to face-on while a group is active, back to the tilted view otherwise.
   useLayoutEffect(() => {
@@ -536,15 +725,6 @@ export function SolarSystem() {
     const minFrameMs = 1000 / performanceProfile.skills.maxFps;
     const paintThresholdMs = Math.max(0, minFrameMs - 1);
 
-    const rampAt = (now: number) => {
-      const start = igniteStartRef.current;
-      if (start === null) {
-        return 0;
-      }
-      const r = clamp((now - start - RAMP_DELAY_MS) / RAMP_MS, 0, 1);
-      return r * r * (3 - 2 * r);
-    };
-
     const tick = (now: number) => {
       if (!lastTick) {
         lastTick = now;
@@ -563,20 +743,47 @@ export function SolarSystem() {
         next = target;
       }
       timeScaleRef.current = next;
-      const speed = next * rampAt(now);
+
+      // Spin: fast while the entrance runs, easing down to exactly normal; held still until it starts.
+      const phase = phaseRef.current;
+      if (phase === "entering") {
+        entranceMsRef.current += deltaSeconds * 1000;
+        const progress = clamp(entranceMsRef.current / ENTRANCE_MS, 0, 1);
+        spinRef.current = 1 + (SPIN_START - 1) * (1 - smoothstep(0, 1, progress));
+      } else if (spinRef.current !== 1) {
+        // An entrance cut short hands its leftover spin back smoothly.
+        const spin = spinRef.current + (1 - spinRef.current) * (1 - Math.exp(-deltaSeconds / SPIN_RELAX_TAU_S));
+        spinRef.current = Math.abs(spin - 1) < 0.002 ? 1 : spin;
+      }
+      let ramp = 1;
+      if (rampMsRef.current < MOTION_RAMP_MS) {
+        rampMsRef.current = Math.min(MOTION_RAMP_MS, rampMsRef.current + deltaSeconds * 1000);
+        ramp = smoothstep(0, 1, rampMsRef.current / MOTION_RAMP_MS);
+      }
+      const speed = phase === "hidden" ? 0 : next * spinRef.current * ramp;
       timeRef.current += deltaSeconds * speed;
+      const finishing = phase === "entering" && entranceMsRef.current >= ENTRANCE_MS;
 
       // Tails follow the speed: gone when the system stops, back when it moves.
+      const tailSpeed = Math.min(speed, 1);
       const lastLevel = tailLevelRef.current;
       if (
-        speed !== lastLevel &&
-        (Math.abs(speed - lastLevel) > 0.01 || speed === 0 || speed === 1)
+        tailSpeed !== lastLevel &&
+        (Math.abs(tailSpeed - lastLevel) > 0.01 || tailSpeed === 0 || tailSpeed === 1)
       ) {
-        tailLevelRef.current = speed;
-        svgRef.current?.style.setProperty("--tail", speed.toFixed(2));
+        tailLevelRef.current = tailSpeed;
+        svgRef.current?.style.setProperty("--tail", tailSpeed.toFixed(2));
       }
 
-      if (timeRef.current !== paintedTime && now - lastPaint >= paintThresholdMs) {
+      if (finishing) {
+        // Also paints the resting state and brings the entrance to its exact end.
+        finishEntrance();
+        lastPaint = now;
+        paintedTime = timeRef.current;
+      } else if (
+        (timeRef.current !== paintedTime || phase === "entering") &&
+        now - lastPaint >= paintThresholdMs
+      ) {
         lastPaint = now;
         paintedTime = timeRef.current;
         paint();
@@ -587,7 +794,7 @@ export function SolarSystem() {
 
     frame = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(frame);
-  }, [inView, motionStill, pageVisible, paint, performanceProfile.skills.maxFps]);
+  }, [finishEntrance, inView, motionStill, pageVisible, paint, performanceProfile.skills.maxFps]);
 
   // Lights the skill's projects on the map and scrolls down to it. Skills with no project do nothing.
   const selectSkill = (skill: string) => {
@@ -697,6 +904,8 @@ export function SolarSystem() {
   return (
     <div
       ref={rootRef}
+      data-orrery-phase="hidden"
+      onPointerDownCapture={finishEntrance}
       className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 lg:items-center lg:gap-16"
     >
       <style>{`@keyframes orrery-ray { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }`}</style>
@@ -729,24 +938,28 @@ export function SolarSystem() {
           aria-label="Skills drawn as a solar system with nine orbits, one for each group of skills"
         >
           {skillGroups.map((group, gi) => (
-            <circle
+            <g
               key={group.id}
-              cx={CENTER}
-              cy={CENTER}
-              r={ringRadiusFor(gi)}
-              fill="none"
-              className="stroke-fg"
-              strokeWidth={px}
-              pathLength={1}
-              strokeDasharray={1}
-              style={{
-                strokeDashoffset: entered ? 0 : 1,
-                opacity: activeGroup === group.id ? 0.5 : 0.14,
-                transition: motionStill
-                  ? transition("opacity")
-                  : `stroke-dashoffset ${RING_DRAW_MS}ms ${EASE_ENTER} ${gi * RING_STAGGER_MS}ms, ${transition("opacity")}`,
+              ref={(element) => {
+                ringWrapRefs.current[gi] = element;
               }}
-            />
+            >
+              <circle
+                ref={(element) => {
+                  ringRefs.current[gi] = element;
+                }}
+                cx={CENTER}
+                cy={CENTER}
+                r={ringRadiusFor(gi)}
+                fill="none"
+                className="stroke-fg"
+                strokeWidth={px}
+                style={{
+                  opacity: activeGroup === group.id ? 0.5 : 0.14,
+                  transition: transition("opacity"),
+                }}
+              />
+            </g>
           ))}
 
           {rayPlanet ? (
@@ -768,10 +981,9 @@ export function SolarSystem() {
             />
           ) : null}
 
-          {skillGroups.map((group, gi) => {
+          {skillGroups.map((group) => {
             const groupActive = activeGroup === group.id;
             const dimmed = activeGroup !== null && !groupActive;
-            const planetDelay = gi * RING_STAGGER_MS + RING_DRAW_MS;
             return (
               <g
                 key={group.id}
@@ -792,20 +1004,23 @@ export function SolarSystem() {
                       transform={`translate(${CENTER} ${CENTER}) rotate(${((planet.phase * 180) / Math.PI).toFixed(2)})`}
                     >
                       {motionStill ? null : (
-                        <g style={{ opacity: "var(--tail, 0)" }} pointerEvents="none">
-                          {TAIL_OPACITIES.map((opacity, index) => (
-                            <path
-                              key={index}
-                              d={tailSegmentPath(planet.ringRadius, planet.tailDeg, index)}
-                              fill="none"
-                              className="stroke-fg"
-                              strokeWidth={px * 1.5}
-                              opacity={opacity}
-                            />
-                          ))}
+                        <g ref={mapRef(tailRefs.current, planet.key)} pointerEvents="none">
+                          <g style={{ opacity: "var(--tail, 0)" }}>
+                            {TAIL_OPACITIES.map((opacity, index) => (
+                              <path
+                                key={index}
+                                d={tailSegmentPath(planet.ringRadius, planet.tailDeg, index)}
+                                fill="none"
+                                className="stroke-fg"
+                                strokeWidth={px * 1.5}
+                                opacity={opacity}
+                              />
+                            ))}
+                          </g>
                         </g>
                       )}
                       <g
+                        ref={mapRef(atRefs.current, planet.key)}
                         transform={`translate(${planet.ringRadius} 0)`}
                         pointerEvents={entered ? undefined : "none"}
                         onPointerEnter={(event) => {
@@ -835,15 +1050,7 @@ export function SolarSystem() {
                       >
                         <title>{`${planet.skill}, ${planet.groupTitle}`}</title>
                         <circle r={HIT_RADIUS} className="fill-transparent" />
-                        <g
-                          style={{
-                            opacity: entered ? 1 : 0,
-                            transform: `scale(${entered ? 1 : 0.6})`,
-                            transition: motionStill
-                              ? "none"
-                              : `opacity ${PLANET_IN_MS}ms ${EASE_ENTER} ${planetDelay}ms, transform ${PLANET_IN_MS}ms ${EASE_ENTER} ${planetDelay}ms`,
-                          }}
-                        >
+                        <g ref={mapRef(bodyRefs.current, planet.key)}>
                           <circle
                             r={planet.radius}
                             className={
@@ -900,14 +1107,38 @@ export function SolarSystem() {
         <span
           ref={sunRef}
           aria-hidden="true"
-          className="pointer-events-none absolute left-1/2 top-1/2 rounded-full bg-star"
+          className="pointer-events-none absolute left-1/2 top-1/2"
           style={{
             width: SUN_RADIUS * 2,
             height: SUN_RADIUS * 2,
-            transform: `translate(-50%, -50%) scale(${entered ? 1 : 0.6})`,
-            transition: motionStill ? "none" : `transform ${SUN_IN_MS}ms ${EASE_ENTER}`,
+            transform: "translate(-50%, -50%)",
           }}
-        />
+        >
+          <span ref={sunBodyRef} className="absolute inset-0 rounded-full bg-star" />
+          {/* Thin ripple that leaves the sun once while it appears. */}
+          <svg
+            aria-hidden="true"
+            className="absolute overflow-visible"
+            viewBox={`${-RIPPLE_MAX_PX} ${-RIPPLE_MAX_PX} ${RIPPLE_MAX_PX * 2} ${RIPPLE_MAX_PX * 2}`}
+            style={{
+              left: "50%",
+              top: "50%",
+              width: RIPPLE_MAX_PX * 2,
+              height: RIPPLE_MAX_PX * 2,
+              marginLeft: -RIPPLE_MAX_PX,
+              marginTop: -RIPPLE_MAX_PX,
+            }}
+          >
+            <circle
+              ref={rippleRef}
+              r={SUN_RADIUS}
+              fill="none"
+              className="stroke-fg"
+              strokeWidth={1}
+              opacity={0}
+            />
+          </svg>
+        </span>
       </div>
       {/* One line for the aimed skill; its height is always reserved so nothing jumps. */}
       <p
