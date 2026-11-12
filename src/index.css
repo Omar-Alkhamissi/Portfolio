@@ -85,3 +85,81 @@
     @apply text-fg decoration-star;
   }
 }
+
+/*
+ * Nebula drift (src/components/AnimatedBackground.tsx). Two fixed canvases slide
+ * against each other on the compositor, transform only. --nb-ux/--nb-uy is the
+ * unit vector along the band, --nb-vx/--nb-vy the one across it; the component
+ * sets them from the viewport. The defaults match a 16:9 screen.
+ */
+.nebula-wrap {
+  --nb-ux: 0.92;
+  --nb-uy: -0.39;
+  --nb-vx: 0.39;
+  --nb-vy: 0.92;
+  will-change: transform;
+}
+
+.nebula-layer {
+  position: absolute;
+  max-width: none;
+  opacity: 0;
+  will-change: transform;
+  animation-timing-function: ease-in-out;
+  animation-direction: alternate;
+  animation-iteration-count: infinite;
+}
+
+.nebula-layer[data-ready="true"] {
+  opacity: 1;
+}
+
+.nebula-layer-a {
+  animation-name: nebula-drift-a;
+  animation-duration: 32s;
+}
+
+.nebula-layer-b {
+  animation-name: nebula-drift-b;
+  animation-duration: 23s;
+}
+
+.nebula-wrap[data-paused="true"] .nebula-layer {
+  animation-play-state: paused;
+}
+
+/* Motion off: no drift. The layers rest at their neutral transform. */
+html[data-motion="off"] .nebula-layer-a,
+html[data-motion="off"] .nebula-layer-b {
+  animation: none;
+}
+
+@keyframes nebula-drift-a {
+  from {
+    transform: translate3d(
+        calc(var(--nb-ux) * -60px + var(--nb-vx) * -18px),
+        calc(var(--nb-uy) * -60px + var(--nb-vy) * -18px),
+        0
+      )
+      scale(1.04);
+  }
+  to {
+    transform: translate3d(
+        calc(var(--nb-ux) * 60px + var(--nb-vx) * 18px),
+        calc(var(--nb-uy) * 60px + var(--nb-vy) * 18px),
+        0
+      )
+      scale(1.08);
+  }
+}
+
+@keyframes nebula-drift-b {
+  from {
+    transform: translate3d(calc(var(--nb-ux) * 110px), calc(var(--nb-uy) * 110px), 0)
+      rotate(-1.2deg) scale(1.06);
+  }
+  to {
+    transform: translate3d(calc(var(--nb-ux) * -110px), calc(var(--nb-uy) * -110px), 0)
+      rotate(1.2deg) scale(1.1);
+  }
+}

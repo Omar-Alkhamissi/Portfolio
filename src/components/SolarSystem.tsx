@@ -22,7 +22,7 @@ import {
  *
  * - Each skill group is one orbit ring, each skill one planet on it.
  * - All rings turn the same way. Period follows Kepler's third law:
- *   period = 60s * (r / rInner)^1.5.
+ *   period = 40s * (r / rInner)^1.5.
  * - At rest the orrery is seen at an angle. Pointing at a group (ring planet or
  *   list row) stops the system, swings it face-on and labels that group's planets.
  * - Planets trail a short arc behind them; the tail follows how fast the system turns.
@@ -36,7 +36,7 @@ const SUN_RADIUS = 6;
 const SUN_PERCENT = ((SUN_RADIUS * 2) / VIEWBOX) * 100;
 const RING_INNER = 46;
 const RING_STEP = 24;
-const PERIOD_INNER_S = 60;
+const PERIOD_INNER_S = 40;
 const PLANET_RADIUS = 3;
 const PLANET_RADIUS_ACTIVE = 5;
 const HIT_RADIUS = 12;

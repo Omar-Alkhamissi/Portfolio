@@ -11,13 +11,17 @@ import { getMotionOff, useMotionOff } from "../lib/motion";
  *
  * Implementation notes:
  * - The nebula is rendered once (and on resize) from seeded, domain-warped
- *   value noise into a half-resolution offscreen canvas, then drawn scaled up.
+ *   value noise at half resolution, in idle time, into two fixed canvases
+ *   behind the star canvas. Each reaches 140px past every viewport edge.
+ * - Layer A is the main nebula. Layer B is a fainter, finer wisp layer (not on
+ *   lite). CSS keyframes (transform only, see index.css) drift them in opposite
+ *   directions, so the compositor does the work and no JavaScript runs per frame.
  * - Each star depth layer is pre-rendered to its own offscreen canvas and tiled
  *   vertically, so parallax is just an offset per layer.
- * - Nothing drifts. The composite is redrawn only on scroll, resize or a slow
+ * - The star composite is redrawn only on scroll, resize or a slow
  *   twinkle tick (12fps or less) for about 4 percent of the stars.
- * - Motion off (the site motion switch): fully static. Hidden
- *   tab: twinkle paused.
+ * - Motion off (the site motion switch): fully static, no drift. Hidden
+ *   tab: twinkle and drift paused.
  * - Graph drag: twinkle paused so the graph gets the frame budget.
  * - A rare meteor (every 18 to 40 seconds) is drawn on the star composite pass
  *   for the 500 to 700 ms it lives. Never on lite, hidden, paused or dragging.
@@ -35,6 +39,8 @@ const TWINKLE_SHARE = 0.04;
 const TWINKLE_MIN_INTERVAL_MS = 1000 / 12;
 const NEBULA_FADE_MS = 700;
 const NEBULA_RESIZE_DEBOUNCE_MS = 250;
+// The nebula layers reach this far past every viewport edge so they can drift.
+const NEBULA_OVERSCAN_PX = 140;
 const METEOR_MIN_GAP_MS = 18000;
 const METEOR_MAX_GAP_MS = 40000;
 
@@ -91,7 +97,12 @@ function mulberry32(seed: number) {
 }
 
 // nebula:start
-const NEBULA_PEAK_ALPHA = 0.38;
+type NebulaSpec = { seed: number; freq: number; peakAlpha: number };
+
+// Layer A is the nebula as it always looked. Layer B is a fainter, finer wisp
+// layer on the same band that slides against it while it drifts.
+const NEBULA_SPEC: NebulaSpec = { seed: NEBULA_SEED, freq: 1, peakAlpha: 0.38 };
+const WISP_SPEC: NebulaSpec = { seed: NEBULA_SEED + 4099, freq: 1.6, peakAlpha: 0.14 };
 
 // Nebula colour ramp (canvas only): dim edge, main body, cooler bright core.
 const DEEP = [0x0b, 0x1e, 0x45] as const; // #0B1E45
@@ -179,16 +190,23 @@ function makeBand(width: number, height: number) {
  * take out at most 35 percent of local density.
  */
 function nebulaPixels(
-  width: number,
-  fullHeight: number,
+  viewWidth: number,
   viewportHeight: number,
+  overscan: number,
+  extra: number,
   scale: number,
   octaves: number,
   alphaScale: number,
+  spec: NebulaSpec,
 ) {
+  const { seed, freq, peakAlpha } = spec;
+  // Pixel (0, 0) sits at (-overscan, -overscan) in viewport coordinates, so the
+  // viewport part of the picture is the same as it was before the overscan.
+  const width = viewWidth + 2 * overscan;
+  const fullHeight = viewportHeight + 2 * overscan + extra;
   const w = Math.max(1, Math.ceil(width / scale));
   const h = Math.max(1, Math.ceil(fullHeight / scale));
-  const axis = makeBandAxis(width, viewportHeight);
+  const axis = makeBandAxis(viewWidth, viewportHeight);
 
   // The warp field and band width are low frequency, so compute them on a
   // coarse grid and interpolate.
@@ -201,29 +219,29 @@ function nebulaPixels(
   const warpPx = 300;
   for (let gy = 0; gy < gh; gy++) {
     for (let gx = 0; gx < gw; gx++) {
-      const x = gx * grid * scale;
-      const y = gy * grid * scale;
-      const ux = x / 650;
-      const uy = y / 650;
-      const qx = fbm(ux, uy, NEBULA_SEED + 1, 3);
-      const qy = fbm(ux + 5.2, uy + 1.3, NEBULA_SEED + 2, 3);
-      const rx = fbm(ux + 4 * qx + 1.7, uy + 4 * qy + 9.2, NEBULA_SEED + 3, 3);
-      const ry = fbm(ux + 4 * qx + 8.3, uy + 4 * qy + 2.8, NEBULA_SEED + 4, 3);
+      const x = gx * grid * scale - overscan;
+      const y = gy * grid * scale - overscan;
+      const ux = (x * freq) / 650;
+      const uy = (y * freq) / 650;
+      const qx = fbm(ux, uy, seed + 1, 3);
+      const qy = fbm(ux + 5.2, uy + 1.3, seed + 2, 3);
+      const rx = fbm(ux + 4 * qx + 1.7, uy + 4 * qy + 9.2, seed + 3, 3);
+      const ry = fbm(ux + 4 * qx + 8.3, uy + 4 * qy + 2.8, seed + 4, 3);
       const k = gy * gw + gx;
       warpX[k] = (rx - 0.5) * warpPx;
       warpY[k] = (ry - 0.5) * warpPx;
-      widthMod[k] = fbm(x / 1400, y / 1400, NEBULA_SEED + 5, 2);
+      widthMod[k] = fbm(x / 1400, y / 1400, seed + 5, 2);
     }
   }
 
   const density = new Float32Array(w * h);
   for (let py = 0; py < h; py++) {
-    const y = py * scale;
+    const y = py * scale - overscan;
     const gyf = py / grid;
     const gy0 = Math.floor(gyf);
     const ty = gyf - gy0;
     for (let px = 0; px < w; px++) {
-      const x = px * scale;
+      const x = px * scale - overscan;
       const gxf = px / grid;
       const gx0 = Math.floor(gxf);
       const tx = gxf - gx0;
@@ -247,11 +265,11 @@ function nebulaPixels(
 
       const sx = x + wx;
       const sy = y + wy;
-      const c = fbm(sx / 300, sy / 300, NEBULA_SEED, octaves, 0.58);
+      const c = fbm((sx * freq) / 300, (sy * freq) / 300, seed, octaves, 0.58);
       // Body plus the thin contour ridges of the warped field (filaments).
       const ridge = 1 - Math.abs(2 * c - 1);
       // Fine ridged noise along the warped flow reads as wisps and fibres.
-      const fn = fbm(sx / 110 - 7, sy / 110 + 3, NEBULA_SEED + 17, 3);
+      const fn = fbm((sx * freq) / 110 - 7, (sy * freq) / 110 + 3, seed + 17, 3);
       const fibre = Math.pow(1 - Math.abs(2 * fn - 1), 3);
       const body = smoothstep(0.22, 0.8, c);
       let cloud =
@@ -260,7 +278,7 @@ function nebulaPixels(
         0.22 * body * fibre +
         0.1 * Math.pow(ridge, 8);
 
-      const dn = fbm(sx / 150 + 40, sy / 150 - 12, NEBULA_SEED + 31, 3);
+      const dn = fbm((sx * freq) / 150 + 40, (sy * freq) / 150 - 12, seed + 31, 3);
       const lane = smoothstep(0.82, 0.98, 1 - Math.abs(2 * dn - 1));
       cloud *= 1 - 0.35 * lane;
 
@@ -291,8 +309,8 @@ function nebulaPixels(
   const coreStart = Math.min(0.95, percentile(0.9) / top);
 
   const data = new Uint8ClampedArray(w * h * 4);
-  const peak = NEBULA_PEAK_ALPHA * alphaScale * 255;
-  let dither = (NEBULA_SEED * 2654435761) >>> 0 || 1;
+  const peak = peakAlpha * alphaScale * 255;
+  let dither = (seed * 2654435761) >>> 0 || 1;
   const nextDither = () => {
     dither ^= dither << 13;
     dither ^= dither >>> 17;
@@ -329,24 +347,44 @@ function nebulaPixels(
 }
 // nebula:end
 
-function renderNebula(
-  width: number,
-  fullHeight: number,
-  viewportHeight: number,
+/**
+ * Renders one nebula layer straight into its on-screen canvas at 1/scale
+ * resolution. The canvas is resized and filled in the same task, so the old
+ * picture is never seen blank.
+ */
+function paintNebulaLayer(
+  target: HTMLCanvasElement,
+  viewWidth: number,
+  viewHeight: number,
+  overscan: number,
+  extra: number,
   scale: number,
   octaves: number,
   alphaScale: number,
+  spec: NebulaSpec,
 ) {
-  const { data, w, h } = nebulaPixels(width, fullHeight, viewportHeight, scale, octaves, alphaScale);
-  const off = document.createElement("canvas");
-  off.width = w;
-  off.height = h;
-  const octx = off.getContext("2d");
-  if (!octx) return off;
+  const { data, w, h } = nebulaPixels(
+    viewWidth,
+    viewHeight,
+    overscan,
+    extra,
+    scale,
+    octaves,
+    alphaScale,
+    spec,
+  );
+  target.width = w;
+  target.height = h;
+  target.style.left = `${-overscan}px`;
+  target.style.top = `${-overscan}px`;
+  target.style.width = `${viewWidth + 2 * overscan}px`;
+  target.style.height = `${viewHeight + 2 * overscan + extra}px`;
+  target.style.transformOrigin = `${overscan + viewWidth / 2}px ${overscan + viewHeight / 2}px`;
+  const octx = target.getContext("2d");
+  if (!octx) return;
   const image = octx.createImageData(w, h);
   image.data.set(data);
   octx.putImageData(image, 0, 0);
-  return off;
 }
 
 /** cubic-bezier(0.23, 1, 0.32, 1), the site's easing, solved for y at x. */
@@ -376,6 +414,9 @@ function pickStarColor(rand: () => number) {
 
 export function AnimatedBackground() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const nebulaWrapRef = useRef<HTMLDivElement | null>(null);
+  const nebulaARef = useRef<HTMLCanvasElement | null>(null);
+  const nebulaBRef = useRef<HTMLCanvasElement | null>(null);
   const performanceProfile = useAdaptivePerformanceProfile();
   const diagnostics = usePerformanceDiagnosticFlags();
   const graphDragRef = useRef(false);
@@ -411,6 +452,8 @@ export function AnimatedBackground() {
     if (!ctx) return;
     const quality = performanceProfile.background;
     const lite = quality.maxDpr <= 1;
+    // Layer B is skipped on lite, so hide any copy a heavier profile painted.
+    if (lite && nebulaBRef.current) nebulaBRef.current.dataset.ready = "false";
     const nebulaScale = lite ? 3 : 2;
     const nebulaOctaves = lite ? 5 : 6;
 
@@ -422,12 +465,10 @@ export function AnimatedBackground() {
     // The nebula keeps the viewport size it was painted for, so an old one can
     // be drawn scaled while a new one is rendered after a resize.
     let nebula: {
-      canvas: HTMLCanvasElement;
       viewWidth: number;
       viewHeight: number;
       extra: number;
     } | null = null;
-    let nebulaFadeStart = -1;
     let layers: HTMLCanvasElement[] = [];
     let twinklers: Twinkler[] = [];
     let meteor: Meteor | null = null;
@@ -440,21 +481,44 @@ export function AnimatedBackground() {
         ),
       );
 
-    const buildNebula = () => {
-      const extra = requiredNebulaExtra();
-      return {
-        canvas: renderNebula(
-          width,
-          height + extra,
-          height,
-          nebulaScale,
-          nebulaOctaves,
-          quality.blobAlphaScale,
-        ),
-        viewWidth: width,
-        viewHeight: height,
-        extra,
-      };
+    // Overscan is a whole number of nebula pixels so the half-scale grid lines up.
+    const overscan = Math.ceil(NEBULA_OVERSCAN_PX / nebulaScale) * nebulaScale;
+
+    const paintLayer = (
+      target: HTMLCanvasElement | null,
+      view: { viewWidth: number; viewHeight: number; extra: number },
+      spec: NebulaSpec,
+    ) => {
+      if (!target) return;
+      paintNebulaLayer(
+        target,
+        view.viewWidth,
+        view.viewHeight,
+        overscan,
+        view.extra,
+        nebulaScale,
+        nebulaOctaves,
+        quality.blobAlphaScale,
+        spec,
+      );
+      // CSS fades the layer in (opacity) the first time it has pixels.
+      target.dataset.ready = "true";
+    };
+
+    // The drift runs along the band and across it; keyframes read these two
+    // unit vectors from the wrapper.
+    const setDriftAxis = () => {
+      const wrap = nebulaWrapRef.current;
+      if (!wrap) return;
+      const dx = 1.2 * width;
+      const dy = -0.9 * height;
+      const len = Math.hypot(dx, dy) || 1;
+      const ux = dx / len;
+      const uy = dy / len;
+      wrap.style.setProperty("--nb-ux", ux.toFixed(4));
+      wrap.style.setProperty("--nb-uy", uy.toFixed(4));
+      wrap.style.setProperty("--nb-vx", (-uy).toFixed(4));
+      wrap.style.setProperty("--nb-vy", ux.toFixed(4));
     };
 
     const buildStars = () => {
@@ -531,32 +595,14 @@ export function AnimatedBackground() {
       needsNextFrame = false;
       const scrollY = reduceMotion ? 0 : window.scrollY;
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      // Stars only: the canvas stays transparent so the nebula layers show through.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      if (nebula) {
-        let fade = 1;
-        if (nebulaFadeStart >= 0) {
-          const progress = Math.min(1, Math.max(0, (now - nebulaFadeStart) / NEBULA_FADE_MS));
-          fade = easeOut(progress);
-          if (progress >= 1) nebulaFadeStart = -1;
-          else needsNextFrame = true;
-        }
-        const offset = Math.min(scrollY * PARALLAX.nebula, nebula.extra);
-        ctx.globalAlpha = fade;
-        ctx.imageSmoothingEnabled = true;
-        ctx.imageSmoothingQuality = "high";
-        ctx.drawImage(
-          nebula.canvas,
-          0,
-          offset / nebulaScale,
-          nebula.viewWidth / nebulaScale,
-          nebula.viewHeight / nebulaScale,
-          0,
-          0,
-          canvas.width,
-          canvas.height,
-        );
-        ctx.globalAlpha = 1;
+      // Nebula parallax is one transform on the wrapper around both layers.
+      const wrap = nebulaWrapRef.current;
+      if (wrap) {
+        const offset = nebula ? Math.min(scrollY * PARALLAX.nebula, nebula.extra) : 0;
+        wrap.style.transform = `translate3d(0, ${-offset}px, 0)`;
       }
 
       const tileH = canvas.height;
@@ -637,23 +683,34 @@ export function AnimatedBackground() {
       nebulaFallback = 0;
       nebulaIdle = 0;
     };
+    const queueIdle = (task: () => void) => {
+      if (idle.requestIdleCallback) {
+        nebulaIdle = idle.requestIdleCallback(task, { timeout: 600 });
+      } else {
+        nebulaFallback = window.setTimeout(task, 120);
+      }
+    };
+    // Layer B is painted in its own idle slot after layer A, and never on lite.
+    const paintWisp = (view: { viewWidth: number; viewHeight: number; extra: number }) => {
+      nebulaIdle = 0;
+      nebulaFallback = 0;
+      paintLayer(nebulaBRef.current, view, WISP_SPEC);
+    };
     const paintNebula = () => {
       nebulaIdle = 0;
       nebulaFallback = 0;
-      const first = nebula === null;
-      nebula = buildNebula();
-      nebulaFadeStart = first && !reduceMotion ? performance.now() : -1;
+      const view = { viewWidth: width, viewHeight: height, extra: requiredNebulaExtra() };
+      nebula = view;
+      setDriftAxis();
+      paintLayer(nebulaARef.current, view, NEBULA_SPEC);
       requestDraw();
+      if (!lite) queueIdle(() => paintWisp(view));
     };
     const scheduleNebula = (debounceMs: number) => {
       cancelNebula();
       const queue = () => {
         nebulaDebounce = 0;
-        if (idle.requestIdleCallback) {
-          nebulaIdle = idle.requestIdleCallback(paintNebula, { timeout: 600 });
-        } else {
-          nebulaFallback = window.setTimeout(paintNebula, 120);
-        }
+        queueIdle(paintNebula);
       };
       if (debounceMs > 0) nebulaDebounce = window.setTimeout(queue, debounceMs);
       else queue();
@@ -712,6 +769,9 @@ export function AnimatedBackground() {
     };
 
     const syncTwinkle = () => {
+      // The compositor drift pauses with the tab and during a graph drag.
+      const wrap = nebulaWrapRef.current;
+      if (wrap) wrap.dataset.paused = document.hidden || graphDragRef.current ? "true" : "false";
       const shouldRun =
         !reduceMotion && !document.hidden && !graphDragRef.current && twinklers.length > 0;
       if (shouldRun && !twinkleTimer) {
@@ -763,8 +823,8 @@ export function AnimatedBackground() {
 
     // Re-reads the one motion switch.
     const applyMotionState = () => {
+      // The drift itself follows html[data-motion] in CSS, so it switches live.
       reduceMotion = getMotionOff();
-      if (reduceMotion) nebulaFadeStart = -1;
       syncTwinkle();
       requestDraw();
     };
@@ -794,11 +854,44 @@ export function AnimatedBackground() {
     return null;
   }
 
+  // The nebula sits behind the star canvas in its own fixed layers, so the
+  // browser compositor moves it. The wrapper takes the scroll parallax and the
+  // two layers take the CSS drift (see index.css).
+  const layerStyle = {
+    transition: `opacity ${NEBULA_FADE_MS}ms cubic-bezier(0.23, 1, 0.32, 1)`,
+  };
+
   return (
-    <canvas
-      ref={canvasRef}
-      aria-hidden="true"
-      className="pointer-events-none fixed inset-0 -z-10 h-full w-full"
-    />
+    <>
+      <div
+        ref={nebulaWrapRef}
+        aria-hidden="true"
+        data-nebula-wrap=""
+        data-paused="false"
+        className="nebula-wrap pointer-events-none fixed inset-0 -z-10"
+      >
+        <canvas
+          ref={nebulaARef}
+          aria-hidden="true"
+          data-nebula-layer="a"
+          data-ready="false"
+          style={layerStyle}
+          className="nebula-layer nebula-layer-a pointer-events-none"
+        />
+        <canvas
+          ref={nebulaBRef}
+          aria-hidden="true"
+          data-nebula-layer="b"
+          data-ready="false"
+          style={layerStyle}
+          className="nebula-layer nebula-layer-b pointer-events-none"
+        />
+      </div>
+      <canvas
+        ref={canvasRef}
+        aria-hidden="true"
+        className="pointer-events-none fixed inset-0 -z-10 h-full w-full"
+      />
+    </>
   );
 }
