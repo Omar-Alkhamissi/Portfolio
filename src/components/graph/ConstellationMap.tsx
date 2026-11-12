@@ -27,11 +27,25 @@ import {
   type LayoutArea,
   type Simulation,
 } from "../../lib/projectGraphLayout";
+import {
+  easeEnter,
+  easeLeave,
+  easeStay,
+  planRetrace,
+  planSpawn,
+  playDash,
+  playPulse,
+  playRetrace,
+  playSignal,
+  playSpawn,
+  type Point,
+  type SpawnPlan,
+  type Timeline,
+} from "./mapMotion";
 
-type Point = { x: number; y: number };
 type Box = { x1: number; y1: number; x2: number; y2: number };
 type View = { zoom: number; panX: number; panY: number };
-type DrawPhase = "hidden" | "drawing" | "done";
+type DrawPhase = "hidden" | "spawning" | "done";
 type LabelSpot = { x: number; y: number; anchor: "start" | "end" | "middle" };
 type ClusterLabel = { key: ClusterKey; name: string; x: number; y: number; box: Box };
 type DragState =
@@ -42,8 +56,8 @@ type DragState =
 type Signal = { id: number; star: number; delay: number };
 // A spark travels from one star to a linked one, in fitted (pre-view) space.
 type Spark = { id: number; from: Point; to: Point };
+// A star whose links are drawing in, or retracting, on hover or deselect.
 type Fading = { id: number; star: number };
-type Trace = { star: number[]; edgeFrom: number[]; edgeDelay: number[]; name: Map<ClusterKey, number>; cross: number };
 
 type ConstellationMapProps = {
   graph: ProjectGraphData;
@@ -78,27 +92,31 @@ const EDGE_OPACITY_SAME = 0.2;
 const EDGE_OPACITY_CROSS = 0.08;
 const EDGE_OPACITY_HOVER = 0.55;
 const ENTER = "cubic-bezier(0.05, 0.7, 0.1, 1)";
-const LEAVE = "cubic-bezier(0.3, 0, 0.8, 0.15)";
 const STAY = "cubic-bezier(0.2, 0, 0, 1)";
-// Trace-in: constellations in reading order, 180 ms apart.
-const TRACE_CLUSTER_GAP_MS = 180;
-const TRACE_STAR_MS = 300;
-const TRACE_STAR_GAP_MS = 30;
-const TRACE_STAR_SPREAD_MS = 240;
-const TRACE_LINK_LAG_MS = 120;
-const TRACE_LINK_MS = 400;
-const TRACE_NAME_LAG_MS = 300;
-const TRACE_NAME_MS = 300;
-const TRACE_CROSS_MS = 300;
-const TRACE_TOTAL_MS = 1800;
-const TRACE_START_SCALE = 0.6;
 // Signal, spark and slew.
 const SIGNAL_LINK_MS = 320;
 const SIGNAL_GAP_MS = 40;
+const PACKET_MS = 380;
 const BEAT_MS = 260;
+const BEAT_PEAK = 1.35;
+const RIPPLE_MS = 520;
+const RIPPLE_GROW = 22;
+const RIPPLE_OPACITY = 0.7;
 const SPIKE_MS = 240;
-const SIGNAL_FADE_MS = 150;
+const RETRACT_MS = 180;
 const SPARK_MS = 400;
+// Hover links draw out and retract; the index re-traces a constellation.
+const HOVER_DRAW_MS = 160;
+const HOVER_RETRACT_MS = 120;
+const RETRACE_LINK_MS = 90;
+// Idle life: one pulse at a time along a random link.
+const IDLE_GAP_MIN_MS = 2200;
+const IDLE_GAP_MAX_MS = 4500;
+const PULSE_MIN_MS = 600;
+const PULSE_MAX_MS = 900;
+const PULSE_BEAT_MS = 240;
+const PULSE_BEAT_PEAK = 1.15;
+const PULSE_OPACITY = 0.9;
 const SLEW_MS = 450;
 const SLEW_INSET = 12;
 // Skill focus: rings draw in left to right.
@@ -124,37 +142,17 @@ const intersects = (a: Box, b: Box) => a.x1 < b.x2 && a.x2 > b.x1 && a.y1 < b.y2
 
 const fraction = (value: number) => value - Math.floor(value);
 
-// CSS cubic-bezier as a function of progress, for the rAF slew.
-function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
-  const curve = (t: number, a: number, b: number) =>
-    3 * a * t * (1 - t) * (1 - t) + 3 * b * t * t * (1 - t) + t * t * t;
-  return (progress: number) => {
-    if (progress <= 0) return 0;
-    if (progress >= 1) return 1;
-    let low = 0;
-    let high = 1;
-    let t = progress;
-    for (let step = 0; step < 24; step += 1) {
-      const x = curve(t, x1, x2);
-      if (Math.abs(x - progress) < 1e-5) break;
-      if (x < progress) low = t;
-      else high = t;
-      t = (low + high) / 2;
-    }
-    return curve(t, y1, y2);
-  };
-}
+// A hover link sits over its resting line; this keeps the two together at the
+// old hover brightness.
+const overlayOpacity = (base: number) =>
+  base >= EDGE_OPACITY_HOVER ? EDGE_OPACITY_HOVER : 1 - (1 - EDGE_OPACITY_HOVER) / (1 - base);
 
-const easeStay = cubicBezier(0.2, 0, 0, 1);
-
-// Keyframes for the twinkle, the signal on select and the spark. Transforms
+// Keyframes for the twinkle, skill rings, spikes and the spark. Transforms
 // on SVG groups scale around the group's own origin, which is the star centre.
+// Spawn-in, signal, hover links and idle pulses run on rAF (see mapMotion.ts).
 const MAP_KEYFRAMES = `
 @keyframes cm-twinkle { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
-@keyframes cm-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
-@keyframes cm-fade { from { opacity: 1; } to { opacity: 0; } }
 @keyframes cm-ring { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
-@keyframes cm-beat { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.35); } }
 @keyframes cm-spike { from { transform: scale(0); } to { transform: scale(1); } }
 @keyframes cm-spark {
   from { transform: translate(var(--spark-from-x), var(--spark-from-y)); }
@@ -325,6 +323,11 @@ export function ConstellationMap({
       })),
     [fit, positions, view],
   );
+  // Draw nothing until the map is measured and every position is a real number.
+  const ready =
+    measured &&
+    screen.length === nodes.length &&
+    screen.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
 
   const toWorld = useCallback(
     (clientX: number, clientY: number): Point => {
@@ -466,16 +469,14 @@ export function ConstellationMap({
     return result;
   }, [clusterLabels, hovered, isMobile, nodes, radii, screen, selected, settling, size.height, size.width, wantedLabels]);
 
-  // Trace-in schedule. Constellations go in reading order (rows top to
-  // bottom, then left to right); inside one, stars go left to right and each
-  // internal link draws from its earlier star. Links between constellations
-  // fade in together once all six are in.
-  const trace = useMemo<Trace>(() => {
-    const star = new Array<number>(nodes.length).fill(0);
-    const edgeFrom = edges.map((edge) => edge.source);
-    const edgeDelay = new Array<number>(edges.length).fill(0);
-    const name = new Map<ClusterKey, number>();
-    if (baseLayout.length !== nodes.length) return { star, edgeFrom, edgeDelay, name, cross: 0 };
+  // Spawn-in schedule. Constellations go in reading order (rows top to
+  // bottom, then left to right); inside one, the stars light up along a
+  // breadth-first walk from the most-linked star. Links between
+  // constellations shoot across once all six are in, shortest first.
+  const spawnPlan = useMemo<SpawnPlan>(() => {
+    if (baseLayout.length !== nodes.length) {
+      return planSpawn(nodes, edges, CLUSTERS.map((cluster) => cluster.key), () => 0);
+    }
     const ys = baseLayout.map((point) => point.y);
     const minY = Math.min(...ys);
     const spanY = Math.max(Math.max(...ys) - minY, 1);
@@ -488,30 +489,12 @@ export function ConstellationMap({
     })
       .filter((group) => group.members.length > 0)
       .sort((a, b) => a.row - b.row || a.cx - b.cx);
-
-    let end = 0;
-    groups.forEach((group, rank) => {
-      const start = rank * TRACE_CLUSTER_GAP_MS;
-      const gap =
-        group.members.length > 1
-          ? Math.min(TRACE_STAR_GAP_MS, TRACE_STAR_SPREAD_MS / (group.members.length - 1))
-          : 0;
-      [...group.members]
-        .sort((a, b) => baseLayout[a].x - baseLayout[b].x)
-        .forEach((index, order) => {
-          star[index] = start + order * gap;
-        });
-      name.set(group.key, start + TRACE_NAME_LAG_MS);
-      end = Math.max(end, start + TRACE_NAME_LAG_MS + TRACE_NAME_MS);
-    });
-    edges.forEach((edge, edgeIndex) => {
-      const from = star[edge.source] <= star[edge.target] ? edge.source : edge.target;
-      edgeFrom[edgeIndex] = from;
-      if (nodes[edge.source].cluster !== nodes[edge.target].cluster) return;
-      edgeDelay[edgeIndex] = star[from] + TRACE_LINK_LAG_MS;
-      end = Math.max(end, edgeDelay[edgeIndex] + TRACE_LINK_MS);
-    });
-    return { star, edgeFrom, edgeDelay, name, cross: Math.min(end, TRACE_TOTAL_MS - TRACE_CROSS_MS) };
+    const length = (edgeIndex: number) => {
+      const a = baseLayout[edges[edgeIndex].source];
+      const b = baseLayout[edges[edgeIndex].target];
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    };
+    return planSpawn(nodes, edges, groups.map((group) => group.key), length);
   }, [baseLayout, edges, nodes]);
 
   // Each star twinkles with its own period (3 to 7 s) and phase.
@@ -538,7 +521,7 @@ export function ConstellationMap({
     return () => observer.disconnect();
   }, []);
 
-  // Trace-in, once, when the map first enters view.
+  // Spawn-in, once, when the map first enters view.
   useEffect(() => {
     if (stillMode) {
       setPhase("done");
@@ -549,25 +532,34 @@ export function ConstellationMap({
       setPhase("done");
       return;
     }
-    let raf = 0;
-    let timer = 0;
     const observer = new IntersectionObserver(
       ([entry]) => {
         if (!entry.isIntersecting) return;
         observer.disconnect();
-        raf = window.requestAnimationFrame(() => setPhase("drawing"));
-        timer = window.setTimeout(() => setPhase("done"), TRACE_TOTAL_MS + 80);
+        setPhase((current) => (current === "hidden" ? "spawning" : current));
       },
       { threshold: 0.25 },
     );
     observer.observe(frame);
-    return () => {
-      observer.disconnect();
-      window.cancelAnimationFrame(raf);
-      window.clearTimeout(timer);
-    };
-    // Runs once on mount on purpose: the trace-in never replays.
+    return () => observer.disconnect();
+    // Runs once on mount on purpose: the spawn-in never replays.
   }, []);
+
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
+  // Any touch on the map during the spawn-in jumps to the resting state.
+  const finishSpawn = useCallback(() => {
+    if (phaseRef.current !== "done") setPhase("done");
+  }, []);
+  useEffect(() => {
+    if (phaseRef.current === "spawning") setPhase("done");
+  }, [hovered, selected, clusterFocus, skill]);
+
+  // Live positions and sizes for the rAF timelines.
+  const radiiRef = useRef(radii);
+  radiiRef.current = radii;
+  const spawnPlanRef = useRef(spawnPlan);
+  spawnPlanRef.current = spawnPlan;
 
   // Signal on select, spark on follow, slew to an off-screen star.
   const [signal, setSignal] = useState<Signal | null>(null);
@@ -623,6 +615,7 @@ export function ConstellationMap({
     setPhase("done");
     setSignal(null);
     setSpark(null);
+    setFading(null);
   }, [stillMode]);
 
   // Glide the pan so a star outside the view sits near the centre. Zoom stays.
@@ -663,10 +656,8 @@ export function ConstellationMap({
     prevSelectedRef.current = selected;
     if (previous === selected) return;
     const id = (motionIdRef.current += 1);
-    if (previous !== null) {
-      setFading({ id, star: previous });
-      later(() => setFading((current) => (current?.id === id ? null : current)), SIGNAL_FADE_MS + 20);
-    }
+    // The old gold links retract into their star; with motion off they just go.
+    setFading(previous !== null && !stillModeRef.current ? { id, star: previous } : null);
     if (selected === null) {
       setSignal(null);
       setSpark(null);
@@ -691,6 +682,184 @@ export function ConstellationMap({
       setSignal({ id, star: selected, delay: 0 });
     }
   }, [later, selected, slewTo]);
+
+  // The rAF timelines below live in mapMotion.ts. Each one is cancelled when
+  // its effect re-runs or the map unmounts.
+  const readScreen = useCallback(() => screenRef.current, []);
+  const readRadius = useCallback((index: number) => radiiRef.current[index] ?? RADIUS_MIN, []);
+  const overlayLines = (group: string) => [
+    ...(svgRef.current?.querySelectorAll<SVGElement>(`[${group}] line`) ?? []),
+  ];
+
+  const spawnRun = phase === "spawning" && ready;
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!spawnRun || !svg) return;
+    const timeline = playSpawn(svg, spawnPlanRef.current, readScreen, readRadius, () =>
+      setPhase((current) => (current === "spawning" ? "done" : current)),
+    );
+    return () => timeline.cancel();
+  }, [readRadius, readScreen, spawnRun]);
+
+  // Hover: the hovered star's links draw out from it and retract after.
+  const hoverAnimated = !stillMode && phase === "done";
+  const [hoverIn, setHoverIn] = useState<Fading | null>(null);
+  const [hoverOut, setHoverOut] = useState<Fading | null>(null);
+  const hoverInRef = useRef<Fading | null>(null);
+  const hoverInTimelineRef = useRef<Timeline | null>(null);
+  useEffect(() => {
+    if (!hoverAnimated) {
+      hoverInRef.current = null;
+      setHoverIn(null);
+      setHoverOut(null);
+      return;
+    }
+    const current = hoverInRef.current;
+    if (current?.star === hovered) return;
+    if (current) setHoverOut({ id: (motionIdRef.current += 1), star: current.star });
+    const next = hovered === null ? null : { id: (motionIdRef.current += 1), star: hovered };
+    hoverInRef.current = next;
+    setHoverIn(next);
+  }, [hoverAnimated, hovered]);
+  useEffect(() => {
+    if (!hoverIn) return;
+    const timeline = playDash(overlayLines("data-hover-in"), 1, 0, HOVER_DRAW_MS, easeEnter);
+    hoverInTimelineRef.current = timeline;
+    return () => {
+      timeline.cancel();
+      hoverInTimelineRef.current = null;
+    };
+    // overlayLines reads the DOM; the timeline restarts only for a new hover.
+  }, [hoverIn]);
+  useEffect(() => {
+    if (!hoverOut) return;
+    const { id } = hoverOut;
+    const timeline = playDash(overlayLines("data-hover-out"), 0, 1, HOVER_RETRACT_MS, easeLeave, () =>
+      setHoverOut((current) => (current?.id === id ? null : current)),
+    );
+    return () => timeline.cancel();
+  }, [hoverOut]);
+  // A drag shows the hover links at once and drops any retracting ones.
+  const settleHover = useCallback(() => {
+    hoverInTimelineRef.current?.cancel();
+    hoverInTimelineRef.current = null;
+    svgRef.current
+      ?.querySelectorAll("[data-hover-in] line")
+      .forEach((line) => line.setAttribute("stroke-dashoffset", "0"));
+    setHoverOut(null);
+  }, []);
+
+  // Deselect: the gold links retract into their star.
+  useEffect(() => {
+    if (!fading) return;
+    const { id } = fading;
+    const timeline = playDash(overlayLines("data-fading"), 0, 1, RETRACT_MS, easeLeave, () =>
+      setFading((current) => (current?.id === id ? null : current)),
+    );
+    return () => timeline.cancel();
+  }, [fading]);
+
+  // Select: gold links, packets, neighbour beats and one ripple.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!signal || !svg || stillModeRef.current) return;
+    const timeline = playSignal(svg, {
+      star: signal.star,
+      neighbours: neighbours[signal.star].map((link) => link.index),
+      delay: signal.delay,
+      linkMs: SIGNAL_LINK_MS,
+      gapMs: SIGNAL_GAP_MS,
+      packetMs: PACKET_MS,
+      beatMs: BEAT_MS,
+      beatPeak: BEAT_PEAK,
+      rippleMs: RIPPLE_MS,
+      rippleGrow: RIPPLE_GROW,
+      rippleOpacity: RIPPLE_OPACITY,
+      screen: readScreen,
+      radius: readRadius,
+    });
+    return () => timeline.cancel();
+  }, [neighbours, readRadius, readScreen, signal]);
+
+  // Index hover: re-trace the highlighted constellation's links.
+  const retraceOn = clusterFocus !== null && !stillMode && phase === "done" && ready && !settling;
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!retraceOn || clusterFocus === null || !svg) return;
+    const timeline = playRetrace(svg, planRetrace(nodes, edges, clusterFocus, RETRACE_LINK_MS));
+    return () => timeline.cancel();
+  }, [clusterFocus, edges, nodes, retraceOn]);
+
+  // Idle life: now and then one pulse runs along a random link.
+  const [pageVisible, setPageVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState !== "hidden",
+  );
+  useEffect(() => {
+    const update = () => setPageVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", update);
+    return () => document.removeEventListener("visibilitychange", update);
+  }, []);
+  const idleOn =
+    !stillMode &&
+    phase === "done" &&
+    ready &&
+    profile.quality !== "lite" &&
+    inView &&
+    pageVisible &&
+    hovered === null &&
+    selected === null &&
+    !skillActive &&
+    clusterFocus === null &&
+    !settling &&
+    !panning &&
+    edges.length > 0;
+  useEffect(() => {
+    if (!idleOn) return;
+    let timer = 0;
+    let timeline: Timeline | null = null;
+    const schedule = () => {
+      const wait = IDLE_GAP_MIN_MS + Math.random() * (IDLE_GAP_MAX_MS - IDLE_GAP_MIN_MS);
+      timer = window.setTimeout(fire, wait);
+    };
+    const fire = () => {
+      const svg = svgRef.current;
+      const edge = edges[Math.floor(Math.random() * edges.length)];
+      const flip = Math.random() < 0.5;
+      const from = flip ? edge.target : edge.source;
+      const to = flip ? edge.source : edge.target;
+      const a = screenRef.current[from];
+      const b = screenRef.current[to];
+      if (!svg || !a || !b) {
+        schedule();
+        return;
+      }
+      const { width, height } = sizeRef.current;
+      const reach = Math.max(Math.hypot(width, height) / 2, 1);
+      const share = clamp(Math.hypot(b.x - a.x, b.y - a.y) / reach, 0, 1);
+      timeline = playPulse(
+        svg,
+        {
+          from,
+          to,
+          duration: PULSE_MIN_MS + (PULSE_MAX_MS - PULSE_MIN_MS) * share,
+          beatMs: PULSE_BEAT_MS,
+          beatPeak: PULSE_BEAT_PEAK,
+          opacity: PULSE_OPACITY,
+          screen: readScreen,
+        },
+        () => {
+          timeline = null;
+          schedule();
+        },
+      );
+      if (!timeline) schedule();
+    };
+    schedule();
+    return () => {
+      window.clearTimeout(timer);
+      timeline?.cancel();
+    };
+  }, [edges, idleOn, readScreen]);
 
   const stopLoop = useCallback(() => {
     if (rafRef.current !== null) {
@@ -755,13 +924,14 @@ export function ConstellationMap({
       if (event.ctrlKey || event.metaKey) return;
       event.preventDefault();
       event.stopPropagation();
+      finishSpawn();
       const rect = svg.getBoundingClientRect();
       zoomAt(Math.exp(-event.deltaY * 0.0015), event.clientX - rect.left, event.clientY - rect.top);
     };
     const options: AddEventListenerOptions = { capture: true, passive: false };
     window.addEventListener("wheel", handleWheel, options);
     return () => window.removeEventListener("wheel", handleWheel, options);
-  }, [zoomAt]);
+  }, [finishSpawn, zoomAt]);
 
   const endDrag = useCallback(
     (event: ReactPointerEvent<SVGSVGElement>, cancelled: boolean) => {
@@ -795,6 +965,7 @@ export function ConstellationMap({
   const handleStarPointerDown = (index: number, event: ReactPointerEvent<SVGGElement>) => {
     if (event.button !== 0) return;
     event.stopPropagation();
+    finishSpawn();
     svgRef.current?.setPointerCapture(event.pointerId);
     dragRef.current = {
       kind: "star",
@@ -808,6 +979,7 @@ export function ConstellationMap({
 
   const handleBackgroundPointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button !== 0 || dragRef.current) return;
+    finishSpawn();
     cancelSlew();
     svgRef.current?.setPointerCapture(event.pointerId);
     dragRef.current = {
@@ -840,10 +1012,13 @@ export function ConstellationMap({
     if (!drag.moved) {
       drag.moved = true;
       draggingRef.current = true;
-      // A drag cancels any running signal, spark or slew.
+      // A drag cancels any running signal, spark, slew, retract or hover draw.
+      // Idle pulses and the re-trace stop through `settling`.
       cancelSlew();
       setSignal(null);
       setSpark(null);
+      setFading(null);
+      settleHover();
       setSettling(true);
       announceGraphDragPerformance(true);
       if (!simRef.current) simRef.current = createSimulation(nodes, edges, area, positions);
@@ -885,20 +1060,43 @@ export function ConstellationMap({
     }
   };
 
-  const drawing = phase === "drawing";
+  // Before and during the spawn-in everything renders hidden; the spawn
+  // timeline writes values straight to the elements, and "done" hands the
+  // resting values back to React.
+  const unlit = phase !== "done";
   const twinkleOn =
     !stillMode && profile.quality !== "lite" && phase === "done" && inView && !settling && !panning;
   // Signal order: the selected star's links, strongest first.
   const signalLinks = signal !== null && signal.star === selected ? neighbours[signal.star] : null;
-  const beatDelay = new Map<number, number>();
-  signalLinks?.forEach((link, order) => {
-    beatDelay.set(link.index, signal!.delay + order * SIGNAL_GAP_MS + SIGNAL_LINK_MS);
-  });
-  // Draw nothing until the map is measured and every position is a real number.
-  const ready =
-    measured &&
-    screen.length === nodes.length &&
-    screen.every((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
+  const restingEdgeOpacity = (a: number, b: number) => {
+    if (skillActive && skillMatches !== null && skillMatches.has(a) && skillMatches.has(b)) return SKILL_EDGE_OPACITY;
+    return nodes[a].cluster === nodes[b].cluster ? EDGE_OPACITY_SAME : EDGE_OPACITY_CROSS;
+  };
+  // Hover links over the resting lines, drawn out from (or back into) a star.
+  // A link of the selected star is already bright, so it gets none.
+  const hoverOverlay = (state: Fading | null, attr: string, offset: number) =>
+    state !== null &&
+    state.star !== selected && (
+      <g {...{ [attr]: "" }}>
+        {neighbours[state.star]
+          .filter((link) => link.index !== selected)
+          .map((link) => (
+            <line
+              key={`${state.id}-${link.index}`}
+              x1={screen[state.star].x}
+              y1={screen[state.star].y}
+              x2={screen[link.index].x}
+              y2={screen[link.index].y}
+              className="stroke-fg"
+              strokeWidth={1}
+              strokeOpacity={overlayOpacity(restingEdgeOpacity(state.star, link.index))}
+              pathLength={1}
+              strokeDasharray={1}
+              strokeDashoffset={offset}
+            />
+          ))}
+      </g>
+    );
 
   return (
     <div
@@ -948,16 +1146,14 @@ export function ConstellationMap({
               {clusterLabels.map((label) => (
                 <text
                   key={label.key}
+                  data-cluster-name={label.key}
                   x={label.x}
                   y={label.y}
                   textAnchor="middle"
                   className="pointer-events-none fill-fg-faint text-[14px]"
                   style={{
-                    opacity:
-                      phase === "hidden" ? 0 : clusterFocus && clusterFocus !== label.key ? 0.2 : 1,
-                    transition: drawing
-                      ? `opacity ${TRACE_NAME_MS}ms ${ENTER} ${trace.name.get(label.key) ?? 0}ms`
-                      : `opacity ${HOVER_MS}ms ${STAY}`,
+                    opacity: unlit ? 0 : clusterFocus && clusterFocus !== label.key ? 0.2 : 1,
+                    transition: unlit ? "none" : `opacity ${HOVER_MS}ms ${STAY}`,
                   }}
                 >
                   {label.name}
@@ -967,14 +1163,16 @@ export function ConstellationMap({
 
             <g aria-hidden="true" className="pointer-events-none">
               {edges.map((edge, edgeIndex) => {
-                // Each line runs from the star that traced in first.
-                const from = trace.edgeFrom[edgeIndex] ?? edge.source;
+                // Each line runs from the star it is drawn from in the spawn-in.
+                const from = spawnPlan.edgeFrom[edgeIndex] ?? edge.source;
                 const to = from === edge.source ? edge.target : edge.source;
                 const a = screen[from];
                 const b = screen[to];
-                const lit = [hovered, selected].some(
-                  (index) => index !== null && (edge.source === index || edge.target === index),
-                );
+                const litBySelect = selected !== null && (edge.source === selected || edge.target === selected);
+                const litByHover = hovered !== null && (edge.source === hovered || edge.target === hovered);
+                const lit = litBySelect || litByHover;
+                // With motion on, a hover link draws over the line instead (hoverOverlay).
+                const bright = litBySelect || (litByHover && !hoverAnimated);
                 const sameCluster = nodes[edge.source].cluster === nodes[edge.target].cluster;
                 let opacity = 1;
                 if (
@@ -987,25 +1185,19 @@ export function ConstellationMap({
                 const skillLink =
                   skillActive && skillMatches.has(edge.source) && skillMatches.has(edge.target);
                 if (skillActive && !skillLink) opacity = Math.min(opacity, SKILL_DIM);
-                if (phase === "hidden" && !sameCluster) opacity = 0;
-                const dashed = phase !== "done" && sameCluster;
-                let edgeTransition = `opacity ${HOVER_MS}ms ${STAY}`;
-                if (drawing) {
-                  edgeTransition = sameCluster
-                    ? `stroke-dashoffset ${TRACE_LINK_MS}ms ${ENTER} ${trace.edgeDelay[edgeIndex] ?? 0}ms`
-                    : `opacity ${TRACE_CROSS_MS}ms ${ENTER} ${trace.cross}ms`;
-                }
                 return (
                   <line
                     key={`${edge.source}-${edge.target}`}
+                    data-edge={edgeIndex}
+                    data-from={from}
                     x1={a.x}
                     y1={a.y}
                     x2={b.x}
                     y2={b.y}
-                    className={skillLink && !lit ? "stroke-star" : "stroke-fg"}
+                    className={skillLink && !bright ? "stroke-star" : "stroke-fg"}
                     strokeWidth={1}
                     strokeOpacity={
-                      lit
+                      bright
                         ? EDGE_OPACITY_HOVER
                         : skillLink
                           ? SKILL_EDGE_OPACITY
@@ -1013,38 +1205,80 @@ export function ConstellationMap({
                             ? EDGE_OPACITY_SAME
                             : EDGE_OPACITY_CROSS
                     }
-                    pathLength={dashed ? 1 : undefined}
-                    strokeDasharray={dashed ? 1 : undefined}
-                    strokeDashoffset={dashed ? (phase === "hidden" ? 1 : 0) : undefined}
-                    style={{ opacity, transition: edgeTransition }}
+                    pathLength={unlit ? 1 : undefined}
+                    strokeDasharray={unlit ? 1 : undefined}
+                    strokeDashoffset={unlit ? 1 : undefined}
+                    style={{ opacity, transition: unlit ? "none" : `opacity ${HOVER_MS}ms ${STAY}` }}
                   />
                 );
               })}
             </g>
 
-            {/* The selected star's links, in the accent. They draw outward on select and fade on deselect. */}
-            <g aria-hidden="true" className="pointer-events-none">
-              {fading !== null &&
-                fading.star !== selected &&
-                neighbours[fading.star].map((link) => (
-                  <line
-                    key={`fade-${fading.id}-${link.index}`}
-                    x1={screen[fading.star].x}
-                    y1={screen[fading.star].y}
-                    x2={screen[link.index].x}
-                    y2={screen[link.index].y}
-                    className="stroke-star"
-                    strokeWidth={1.25}
-                    strokeOpacity={0.9}
-                    style={{ animation: `cm-fade ${SIGNAL_FADE_MS}ms ${LEAVE} both` }}
+            {/* Spawn-in heads ride the growing links; rings mark each constellation's first star. */}
+            {phase === "spawning" && (
+              <g aria-hidden="true" className="pointer-events-none">
+                {spawnPlan.rings.map((index) => (
+                  <circle
+                    key={`ring-${index}`}
+                    data-spawn-ring={index}
+                    r={radii[index]}
+                    fill="none"
+                    className="stroke-fg"
+                    strokeWidth={1}
+                    style={{ opacity: 0 }}
                   />
                 ))}
+                {spawnPlan.links
+                  .filter((link) => link.head)
+                  .map((link) => (
+                    <circle
+                      key={`head-${link.edge}`}
+                      data-spawn-head={link.edge}
+                      r={1.8}
+                      className="fill-fg"
+                      style={{ opacity: 0 }}
+                    />
+                  ))}
+              </g>
+            )}
+
+            <g aria-hidden="true" className="pointer-events-none">
+              {hoverOverlay(hoverOut, "data-hover-out", 0)}
+              {hoverOverlay(hoverIn, "data-hover-in", 1)}
+              {phase === "done" && !stillMode && (
+                <circle data-idle-pulse="" r={1.6} className="fill-fg" style={{ opacity: 0 }} />
+              )}
+            </g>
+
+            {/* The selected star's links, in the accent. They draw outward on select, with a
+                packet riding each one and a ripple from the star, and retract on deselect. */}
+            <g aria-hidden="true" className="pointer-events-none">
+              {fading !== null && fading.star !== selected && (
+                <g data-fading="">
+                  {neighbours[fading.star].map((link) => (
+                    <line
+                      key={`fade-${fading.id}-${link.index}`}
+                      x1={screen[fading.star].x}
+                      y1={screen[fading.star].y}
+                      x2={screen[link.index].x}
+                      y2={screen[link.index].y}
+                      className="stroke-star"
+                      strokeWidth={1.25}
+                      strokeOpacity={0.9}
+                      pathLength={1}
+                      strokeDasharray={1}
+                      strokeDashoffset={0}
+                    />
+                  ))}
+                </g>
+              )}
               {selected !== null &&
-                neighbours[selected].map((link, order) => {
+                neighbours[selected].map((link) => {
                   const animated = signalLinks !== null;
                   return (
                     <line
                       key={`sel-${animated ? signal!.id : "still"}-${link.index}`}
+                      data-gold={animated ? link.index : undefined}
                       x1={screen[selected].x}
                       y1={screen[selected].y}
                       x2={screen[link.index].x}
@@ -1054,18 +1288,31 @@ export function ConstellationMap({
                       strokeOpacity={0.9}
                       pathLength={animated ? 1 : undefined}
                       strokeDasharray={animated ? 1 : undefined}
-                      style={
-                        animated
-                          ? {
-                              animation: `cm-draw ${SIGNAL_LINK_MS}ms ${ENTER} ${
-                                signal!.delay + order * SIGNAL_GAP_MS
-                              }ms both`,
-                            }
-                          : undefined
-                      }
+                      strokeDashoffset={animated ? 1 : undefined}
                     />
                   );
                 })}
+              {signalLinks !== null && (
+                <>
+                  {signalLinks.map((link) => (
+                    <circle
+                      key={`packet-${signal!.id}-${link.index}`}
+                      data-packet={link.index}
+                      r={2}
+                      className="fill-star"
+                      style={{ opacity: 0 }}
+                    />
+                  ))}
+                  <circle
+                    key={`ripple-${signal!.id}`}
+                    data-ripple=""
+                    fill="none"
+                    className="stroke-star"
+                    strokeWidth={1}
+                    style={{ opacity: 0 }}
+                  />
+                </>
+              )}
             </g>
 
             {nodes.map((node) => {
@@ -1075,7 +1322,7 @@ export function ConstellationMap({
               const isSelected = selected === index;
               const isHovered = hovered === index;
               const inFocus = focusSet.has(index);
-              let opacity = phase === "hidden" ? 0 : 1;
+              let opacity = unlit ? 0 : 1;
               let dimmed = false;
               if (clusterFocus && node.cluster !== clusterFocus) {
                 opacity = Math.min(opacity, 0.2);
@@ -1094,15 +1341,13 @@ export function ConstellationMap({
               const labelShown = spot !== undefined && wantedLabels.includes(index);
               const labelSpot = spot ?? { x: radius + LABEL_OFFSET, y: 4, anchor: "start" as const };
               const spike = Math.max(radius * 3, 14);
-              const starDelay = trace.star[index] ?? 0;
-              const scale =
-                (phase === "hidden" ? TRACE_START_SCALE : 1) * (isHovered && !stillMode ? HOVER_SCALE : 1);
+              const scale = unlit ? 0 : isHovered && !stillMode ? HOVER_SCALE : 1;
               const twinkles = twinkleOn && !dimmed && !isHovered && !isSelected;
-              const beat = beatDelay.get(index);
               const spikeGrows = isSelected && signalLinks !== null;
               return (
                 <g
                   key={node.id}
+                  data-star={index}
                   role="button"
                   tabIndex={0}
                   aria-label={`${node.id}, ${node.linkCount} linked projects`}
@@ -1111,9 +1356,7 @@ export function ConstellationMap({
                   className="cursor-pointer outline-none"
                   style={{
                     opacity,
-                    transition: drawing
-                      ? `opacity ${TRACE_STAR_MS}ms ${ENTER} ${starDelay}ms`
-                      : `opacity ${HOVER_MS}ms ${STAY}`,
+                    transition: unlit ? "none" : `opacity ${HOVER_MS}ms ${STAY}`,
                     touchAction: "none",
                   }}
                   onPointerDown={(event) => handleStarPointerDown(index, event)}
@@ -1131,17 +1374,14 @@ export function ConstellationMap({
                 >
                   <circle r={Math.max(radius + 8, 14)} fill="transparent" />
                   <g
+                    data-star-scale={index}
                     style={{
                       transform: `scale(${scale})`,
-                      transition: drawing
-                        ? `transform ${TRACE_STAR_MS}ms ${ENTER} ${starDelay}ms`
-                        : `transform ${HOVER_MS}ms ${STAY}`,
+                      transition: unlit ? "none" : `transform ${HOVER_MS}ms ${STAY}`,
                     }}
                   >
-                    <g
-                      key={beat !== undefined ? `beat-${signal!.id}` : "rest"}
-                      style={beat !== undefined ? { animation: `cm-beat ${BEAT_MS}ms ${STAY} ${beat}ms both` } : undefined}
-                    >
+                    {/* Beats on select and from idle pulses are written here by rAF. */}
+                    <g data-star-beat={index}>
                       {isSelected && (
                         <g
                           key={spikeGrows ? `spike-${signal!.id}` : "spike"}
