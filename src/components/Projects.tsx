@@ -14,7 +14,10 @@ function GraphPlaceholder() {
       className="grid select-none items-start gap-8 lg:grid-cols-[minmax(0,1fr)_400px] lg:gap-10"
       aria-hidden="true"
     >
-      <div className="h-[460px] lg:h-[clamp(420px,70vh,680px)]" />
+      <div>
+        <div className="mb-2 h-8" />
+        <div className="h-[460px] lg:h-[clamp(420px,70vh,680px)]" />
+      </div>
       <div className="h-[420px] rounded-[8px] border border-line bg-surface" />
     </div>
   );

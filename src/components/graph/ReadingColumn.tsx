@@ -1,11 +1,17 @@
-import { useEffect, useId, useState } from "react";
+import { Fragment, useEffect, useId, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ExternalLink, Github } from "lucide-react";
 import { CLUSTERS, type ClusterKey, type ProjectGraphData } from "../../lib/projectGraphData";
+import { setSkillFocus } from "../../lib/skillFocus";
+import { skillsForTech } from "../../lib/skillProjects";
 
 type ReadingColumnProps = {
   graph: ProjectGraphData;
   selected: number | null;
+  /** The focused skill, or null. */
+  skill: string | null;
+  /** Indices of the projects that use `skill`, in map order. */
+  skillIndices: number[] | null;
   onSelect: (index: number | null) => void;
   onHover: (index: number | null) => void;
   onClusterHover: (key: ClusterKey | null) => void;
@@ -21,7 +27,15 @@ const LONG_DESCRIPTION = 140;
 const textButton =
   "text-left text-[14px] text-fg-muted transition-colors duration-150 ease-out hover:text-fg";
 
-export function ReadingColumn({ graph, selected, onSelect, onHover, onClusterHover }: ReadingColumnProps) {
+export function ReadingColumn({
+  graph,
+  selected,
+  skill,
+  skillIndices,
+  onSelect,
+  onHover,
+  onClusterHover,
+}: ReadingColumnProps) {
   const groups = CLUSTERS.map((cluster) => ({
     ...cluster,
     members: graph.nodes.filter((node) => node.cluster === cluster.key),
@@ -40,16 +54,26 @@ export function ReadingColumn({ graph, selected, onSelect, onHover, onClusterHov
     onBlur: () => onHover(null),
   });
 
+  const showSkill = selected === null && skill !== null && skillIndices !== null;
+
   return (
     <div className="min-w-0 rounded-[8px] border border-line bg-surface p-6">
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
-          key={selected === null ? "index" : graph.nodes[selected].id}
+          key={selected === null ? (showSkill ? "skill" : "index") : graph.nodes[selected].id}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1, transition: { duration: 0.15, ease: ENTER } }}
           exit={{ opacity: 0, transition: { duration: 0.1, ease: LEAVE } }}
         >
-          {selected === null ? (
+          {showSkill ? (
+            <SkillList
+              graph={graph}
+              skill={skill}
+              indices={skillIndices}
+              onSelect={onSelect}
+              hoverProps={hoverProps}
+            />
+          ) : selected === null ? (
             <Catalogue
               groups={groups}
               openKey={openKey}
@@ -68,6 +92,43 @@ export function ReadingColumn({ graph, selected, onSelect, onHover, onClusterHov
           )}
         </motion.div>
       </AnimatePresence>
+    </div>
+  );
+}
+
+function SkillList({
+  graph,
+  skill,
+  indices,
+  onSelect,
+  hoverProps,
+}: {
+  graph: ProjectGraphData;
+  skill: string;
+  indices: number[];
+  onSelect: (index: number | null) => void;
+  hoverProps: (index: number) => Record<string, () => void>;
+}) {
+  return (
+    <div>
+      <h3 className="text-[16px] font-semibold text-fg">Projects using {skill}</h3>
+      <ul className="mt-3 space-y-1.5">
+        {indices.map((index) => (
+          <li key={graph.nodes[index].id}>
+            <button
+              type="button"
+              className={textButton}
+              onClick={() => onSelect(index)}
+              {...hoverProps(index)}
+            >
+              {graph.nodes[index].project.title}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <button type="button" className="toggle mt-4" onClick={() => setSkillFocus(null)}>
+        All projects
+      </button>
     </div>
   );
 }
@@ -217,7 +278,30 @@ function ProjectNote({
         </dl>
       )}
 
-      <p className="mt-5 text-[14px] leading-[1.6] text-fg-muted">{project.tech.join(", ")}</p>
+      <p className="mt-5 text-[14px] leading-[1.6] text-fg-muted">
+        {project.tech.map((item, order) => {
+          const skills = skillsForTech(item);
+          return (
+            <Fragment key={`${item}-${order}`}>
+              {order > 0 && ", "}
+              {skills.length > 0 ? (
+                <button
+                  type="button"
+                  className="cursor-pointer text-left underline-offset-4 transition-colors duration-150 ease-out hover:text-fg hover:underline"
+                  onClick={() => {
+                    setSkillFocus(skills[0]);
+                    onSelect(null);
+                  }}
+                >
+                  {item}
+                </button>
+              ) : (
+                item
+              )}
+            </Fragment>
+          );
+        })}
+      </p>
 
       {links.length > 0 && (
         <>

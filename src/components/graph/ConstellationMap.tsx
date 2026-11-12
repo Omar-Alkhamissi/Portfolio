@@ -19,6 +19,7 @@ import {
   usePerformanceDiagnosticFlags,
 } from "../../lib/performance";
 import { CLUSTERS, type ClusterKey, type ProjectGraphData } from "../../lib/projectGraphData";
+import { setSkillFocus } from "../../lib/skillFocus";
 import {
   computeLayout,
   createSimulation,
@@ -50,6 +51,10 @@ type ConstellationMapProps = {
   hovered: number | null;
   /** Constellation pointed at in the catalogue; the others dim. */
   clusterFocus: ClusterKey | null;
+  /** The skill chosen in the Skills section, or null. */
+  skill: string | null;
+  /** Indices of the projects that use `skill`; null when no skill is focused. */
+  skillMatches: ReadonlySet<number> | null;
   onSelect: (index: number | null) => void;
   onHover: (index: number | null) => void;
 };
@@ -96,6 +101,12 @@ const SIGNAL_FADE_MS = 150;
 const SPARK_MS = 400;
 const SLEW_MS = 450;
 const SLEW_INSET = 12;
+// Skill focus: rings draw in left to right.
+const RING_MS = 220;
+const RING_GAP_MS = 40;
+const RING_GROW = 5;
+const SKILL_DIM = 0.2;
+const SKILL_EDGE_OPACITY = 0.6;
 const HOVER_SCALE = 1.2;
 const HOVER_MS = 150;
 const COOL_ALPHA = 0.005;
@@ -142,6 +153,7 @@ const MAP_KEYFRAMES = `
 @keyframes cm-twinkle { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
 @keyframes cm-draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
 @keyframes cm-fade { from { opacity: 1; } to { opacity: 0; } }
+@keyframes cm-ring { from { opacity: 0; transform: scale(0.6); } to { opacity: 1; transform: scale(1); } }
 @keyframes cm-beat { 0%, 100% { transform: scale(1); } 45% { transform: scale(1.35); } }
 @keyframes cm-spike { from { transform: scale(0); } to { transform: scale(1); } }
 @keyframes cm-spark {
@@ -194,6 +206,8 @@ export function ConstellationMap({
   selected,
   hovered,
   clusterFocus,
+  skill,
+  skillMatches,
   onSelect,
   onHover,
 }: ConstellationMapProps) {
@@ -360,6 +374,8 @@ export function ConstellationMap({
   }, [hovered, neighbourSets, selected]);
 
   const hasFocus = focusSet.size > 0;
+  const skillActive = skill !== null && skillMatches !== null;
+  const matchCount = skillMatches?.size ?? 0;
   const showAllLabels = view.zoom >= ZOOM_ALL_LABELS;
 
   // Labels wanted this frame, most important first.
@@ -371,11 +387,21 @@ export function ConstellationMap({
     add(selected);
     add(hovered);
     for (const index of byRank) {
-      if (showAllLabels || focusSet.has(index)) add(index);
-      else if (!hasFocus && !isMobile && wanted.length < IDLE_LABELS) add(index);
+      if (showAllLabels || focusSet.has(index) || skillMatches?.has(index)) add(index);
+      else if (!hasFocus && !skillActive && !isMobile && wanted.length < IDLE_LABELS) add(index);
     }
     return wanted;
-  }, [byRank, focusSet, hasFocus, hovered, isMobile, selected, showAllLabels]);
+  }, [byRank, focusSet, hasFocus, hovered, isMobile, selected, showAllLabels, skillActive, skillMatches]);
+
+  // Rings around the skill's stars draw in left to right, by resting position.
+  const ringOrder = useMemo(() => {
+    const order = new Map<number, number>();
+    if (!skillMatches) return order;
+    [...skillMatches]
+      .sort((a, b) => (baseLayout[a]?.x ?? 0) - (baseLayout[b]?.x ?? 0) || a - b)
+      .forEach((index, rank) => order.set(index, rank));
+    return order;
+  }, [baseLayout, skillMatches]);
 
   // Constellation names sit just above the top-most star of their cluster.
   const clusterLabels = useMemo<ClusterLabel[]>(() => {
@@ -879,10 +905,26 @@ export function ConstellationMap({
       ref={wrapperRef}
       className="relative min-w-0"
       onKeyDown={(event) => {
-        if (event.key === "Escape") onSelect(null);
+        if (event.key !== "Escape") return;
+        // First Escape drops the selection; with none left it drops the skill.
+        if (selected === null && skillActive) setSkillFocus(null);
+        else onSelect(null);
       }}
     >
       <style>{MAP_KEYFRAMES}</style>
+      {/* Always reserves its height, so nothing jumps when a skill is focused. */}
+      <div className="mb-2 flex h-8 items-center gap-4" aria-live="polite">
+        {skillActive && (
+          <>
+            <p className="min-w-0 truncate text-[16px] text-fg">
+              {matchCount} {matchCount === 1 ? "project uses" : "projects use"} {skill}
+            </p>
+            <button type="button" className="toggle shrink-0" onClick={() => setSkillFocus(null)}>
+              Clear
+            </button>
+          </>
+        )}
+      </div>
       <div ref={frameRef} className="h-[460px] lg:h-[clamp(420px,70vh,680px)]">
       <p id={descriptionId} className="sr-only">
         Use Tab to move between projects and Enter to open a project note. Escape clears the selection.
@@ -942,6 +984,9 @@ export function ConstellationMap({
                   opacity = 0.2;
                 }
                 if (hasFocus && !lit) opacity = Math.min(opacity, 0.3);
+                const skillLink =
+                  skillActive && skillMatches.has(edge.source) && skillMatches.has(edge.target);
+                if (skillActive && !skillLink) opacity = Math.min(opacity, SKILL_DIM);
                 if (phase === "hidden" && !sameCluster) opacity = 0;
                 const dashed = phase !== "done" && sameCluster;
                 let edgeTransition = `opacity ${HOVER_MS}ms ${STAY}`;
@@ -957,9 +1002,17 @@ export function ConstellationMap({
                     y1={a.y}
                     x2={b.x}
                     y2={b.y}
-                    className="stroke-fg"
+                    className={skillLink && !lit ? "stroke-star" : "stroke-fg"}
                     strokeWidth={1}
-                    strokeOpacity={lit ? EDGE_OPACITY_HOVER : sameCluster ? EDGE_OPACITY_SAME : EDGE_OPACITY_CROSS}
+                    strokeOpacity={
+                      lit
+                        ? EDGE_OPACITY_HOVER
+                        : skillLink
+                          ? SKILL_EDGE_OPACITY
+                          : sameCluster
+                            ? EDGE_OPACITY_SAME
+                            : EDGE_OPACITY_CROSS
+                    }
                     pathLength={dashed ? 1 : undefined}
                     strokeDasharray={dashed ? 1 : undefined}
                     strokeDashoffset={dashed ? (phase === "hidden" ? 1 : 0) : undefined}
@@ -1028,8 +1081,13 @@ export function ConstellationMap({
                 opacity = Math.min(opacity, 0.2);
                 dimmed = true;
               }
-              if (hasFocus && !inFocus) {
+              const skillMatch = skillActive && skillMatches.has(index);
+              if (hasFocus && !inFocus && !skillMatch) {
                 opacity = Math.min(opacity, 0.3);
+                dimmed = true;
+              }
+              if (skillActive && !skillMatch && !isSelected && !isHovered) {
+                opacity = Math.min(opacity, SKILL_DIM);
                 dimmed = true;
               }
               const spot = placement.get(index);
@@ -1113,6 +1171,24 @@ export function ConstellationMap({
                       />
                     </g>
                   </g>
+                  {skillMatch && (
+                    <g
+                      key={`ring-${skill}`}
+                      aria-hidden="true"
+                      className="pointer-events-none"
+                      style={
+                        stillMode
+                          ? undefined
+                          : {
+                              animation: `cm-ring ${RING_MS}ms ${ENTER} ${
+                                (ringOrder.get(index) ?? 0) * RING_GAP_MS
+                              }ms both`,
+                            }
+                      }
+                    >
+                      <circle r={radius + RING_GROW} fill="none" className="stroke-star" strokeWidth={1} />
+                    </g>
+                  )}
                   {focusRing === index && (
                     <circle r={radius + 5} fill="none" className="stroke-star" strokeWidth={2} />
                   )}

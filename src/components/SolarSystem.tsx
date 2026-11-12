@@ -6,11 +6,15 @@ import {
   useRef,
   useState,
   type KeyboardEvent,
+  type MouseEvent,
   type PointerEvent,
 } from "react";
 import { useInView } from "framer-motion";
 import { skillGroups } from "../data/skills";
+import { cn } from "../lib/cn";
 import { useMotionOff } from "../lib/motion";
+import { setSkillFocus, useSkillFocus } from "../lib/skillFocus";
+import { skillProjectCount } from "../lib/skillProjects";
 import { MotionToggle } from "./MotionToggle";
 import {
   useAdaptivePerformanceProfile,
@@ -36,8 +40,11 @@ const SUN_RADIUS = 6;
 const RING_INNER = 46;
 const RING_STEP = 24;
 const PERIOD_INNER_S = 40;
+// Planet size follows evidence: 3px with no linked project, up to 6px for the most used skill.
 const PLANET_RADIUS = 3;
-const PLANET_RADIUS_ACTIVE = 5;
+const PLANET_RADIUS_MAX = 6;
+// Active-group growth, relative to each planet's own base radius.
+const ACTIVE_SCALE = 5 / 3;
 const HIT_RADIUS = 12;
 const EASE_MOVE = "cubic-bezier(0.2, 0, 0, 1)";
 const EASE_ENTER = "cubic-bezier(0.05, 0.7, 0.1, 1)";
@@ -74,6 +81,7 @@ type Planet = {
   groupTitle: string;
   groupIndex: number;
   skill: string;
+  radius: number;
   ringRadius: number;
   phase: number;
   period: number;
@@ -123,6 +131,26 @@ function cubicBezier(x1: number, y1: number, x2: number, y2: number) {
 
 const easeMove = cubicBezier(0.2, 0, 0, 1);
 
+const MOST_PROJECTS = Math.max(
+  1,
+  ...skillGroups.flatMap((group) => group.items.map((skill) => skillProjectCount(skill))),
+);
+
+function planetRadiusFor(skill: string) {
+  const share = Math.sqrt(skillProjectCount(skill) / MOST_PROJECTS);
+  return PLANET_RADIUS + (PLANET_RADIUS_MAX - PLANET_RADIUS) * share;
+}
+
+function projectsLine(skill: string) {
+  const count = skillProjectCount(skill);
+  // Project tech lists name frameworks, not the languages under them, so a zero
+  // here means "not listed", not "never used". Say nothing rather than mislead.
+  if (count === 0) {
+    return "";
+  }
+  return `${skill}: used in ${count} ${count === 1 ? "project" : "projects"}`;
+}
+
 function buildPlanets(): Planet[] {
   const out: Planet[] = [];
   skillGroups.forEach((group, gi) => {
@@ -138,6 +166,7 @@ function buildPlanets(): Planet[] {
         groupTitle: group.title,
         groupIndex: gi,
         skill,
+        radius: planetRadiusFor(skill),
         ringRadius,
         phase: ringPhase + (si / group.items.length) * Math.PI * 2,
         period,
@@ -199,6 +228,7 @@ export function SolarSystem() {
 
   const inView = useInView(rootRef, { amount: 0.1 });
   const motionOff = useMotionOff();
+  const focusedSkill = useSkillFocus();
   const performanceProfile = useAdaptivePerformanceProfile();
   const diagnostics = usePerformanceDiagnosticFlags();
   const motionStill = motionOff || diagnostics.staticMode;
@@ -288,7 +318,7 @@ export function SolarSystem() {
         continue;
       }
       const labelRadius =
-        planet.ringRadius + PLANET_RADIUS_ACTIVE + 6 + Math.abs(sin) * fontUnits * 0.5;
+        planet.ringRadius + planet.radius * ACTIVE_SCALE + 6 + Math.abs(sin) * fontUnits * 0.5;
       let lx = CENTER + labelRadius * cos;
       const ly = CENTER + labelRadius * sin;
       const width = planet.skill.length * fontUnits * 0.56;
@@ -449,6 +479,7 @@ export function SolarSystem() {
     }
     const onKey = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape" && !wideRef.current && activeRef.current) {
+        setSkillFocus(null);
         deactivate(activeRef.current);
       }
     };
@@ -558,6 +589,18 @@ export function SolarSystem() {
     return () => window.cancelAnimationFrame(frame);
   }, [inView, motionStill, pageVisible, paint, performanceProfile.skills.maxFps]);
 
+  // Lights the skill's projects on the map and scrolls down to it. Skills with no project do nothing.
+  const selectSkill = (skill: string) => {
+    if (skillProjectCount(skill) === 0) {
+      return false;
+    }
+    setSkillFocus(skill);
+    document
+      .getElementById("projects")
+      ?.scrollIntoView({ behavior: motionOff ? "auto" : "smooth", block: "start" });
+    return true;
+  };
+
   const transition = (property: string, ms = 150) =>
     motionStill && property === "transform" ? "none" : `${property} ${ms}ms ${EASE_MOVE}`;
 
@@ -599,6 +642,15 @@ export function SolarSystem() {
       }
       if (event.key === "Escape") {
         setActiveSkill(null);
+        setSkillFocus(null);
+        return;
+      }
+      if (event.key === "Enter") {
+        if (activeGroup === groupId && activeSkill && group.items.includes(activeSkill)) {
+          if (selectSkill(activeSkill)) {
+            event.preventDefault();
+          }
+        }
         return;
       }
       if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
@@ -627,6 +679,14 @@ export function SolarSystem() {
     onPointerLeave: (event: PointerEvent) => {
       if (event.pointerType !== "touch" && wideRef.current) {
         clearSkill(skill);
+      }
+    },
+    onClick: (event: MouseEvent) => {
+      // Below lg the first tap only pins the group (the row handles it); a tap on a pinned group picks.
+      if (wideRef.current || activeRef.current === groupId) {
+        if (selectSkill(skill)) {
+          event.stopPropagation();
+        }
       }
     },
   });
@@ -758,11 +818,17 @@ export function SolarSystem() {
                             clearSkill(planet.skill);
                           }
                         }}
+                        style={{ cursor: skillProjectCount(planet.skill) > 0 ? "pointer" : undefined }}
                         onClick={(event) => {
-                          if (
+                          const touch =
                             !wideRef.current ||
-                            (event.nativeEvent as globalThis.PointerEvent).pointerType === "touch"
-                          ) {
+                            (event.nativeEvent as globalThis.PointerEvent).pointerType === "touch";
+                          if (!touch || activeRef.current === group.id) {
+                            if (selectSkill(planet.skill)) {
+                              return;
+                            }
+                          }
+                          if (touch) {
                             toggle(group.id);
                           }
                         }}
@@ -779,10 +845,14 @@ export function SolarSystem() {
                           }}
                         >
                           <circle
-                            r={PLANET_RADIUS}
-                            className={rayKey === planet.key ? "fill-star" : "fill-fg"}
+                            r={planet.radius}
+                            className={
+                              rayKey === planet.key || focusedSkill === planet.skill
+                                ? "fill-star"
+                                : "fill-fg"
+                            }
                             style={{
-                              transform: `scale(${groupActive ? PLANET_RADIUS_ACTIVE / PLANET_RADIUS : 1})`,
+                              transform: `scale(${groupActive ? ACTIVE_SCALE : 1})`,
                               transition: transition("transform"),
                             }}
                           />
@@ -839,6 +909,13 @@ export function SolarSystem() {
           }}
         />
       </div>
+      {/* One line for the aimed skill; its height is always reserved so nothing jumps. */}
+      <p
+        aria-live="polite"
+        className="m-0 mt-3 h-6 text-[14px] leading-6 text-fg-muted"
+      >
+        {rayKey && activeSkill ? projectsLine(activeSkill) : null}
+      </p>
       </div>
 
       <ul className="m-0 flex list-none flex-col gap-5 p-0">
@@ -856,11 +933,12 @@ export function SolarSystem() {
                 <span key={skill}>
                   {index > 0 ? ", " : null}
                   <span
-                    className={
-                      activeGroup === group.id && activeSkill === skill
-                        ? "font-medium text-fg"
-                        : undefined
-                    }
+                    className={cn(
+                      skillProjectCount(skill) > 0 && "cursor-pointer hover:underline",
+                      activeGroup === group.id && activeSkill === skill && "font-medium text-fg",
+                      focusedSkill === skill &&
+                        "text-fg underline decoration-star decoration-1 underline-offset-4",
+                    )}
                     {...skillHandlers(group.id, skill)}
                   >
                     {skill}

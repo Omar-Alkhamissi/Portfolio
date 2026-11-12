@@ -16,6 +16,7 @@ function SolarSystemPlaceholder() {
       <div className="min-w-0 pb-8 lg:pb-0">
         <div className="mb-3 h-[22px] lg:hidden" />
         <div className="aspect-[100/57] w-full max-w-[340px] lg:aspect-square lg:max-w-[560px]" />
+        <div className="mt-3 h-6" />
       </div>
       <div className="flex flex-col gap-5">
         {Array.from({ length: 9 }, (_, index) => (
