@@ -10,12 +10,12 @@ const LazySolarSystem = lazy(() =>
 function SolarSystemPlaceholder() {
   return (
     <div
-      className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,560px)_1fr] lg:gap-16"
+      className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 lg:items-center lg:gap-16"
       aria-hidden="true"
     >
       <div className="min-w-0 pb-8 lg:pb-0">
-        <div className="mb-3 h-[22px]" />
-        <div className="aspect-[100/57] w-full max-w-[340px] lg:max-w-[496px]" />
+        <div className="mb-3 h-[22px] lg:hidden" />
+        <div className="aspect-[100/57] w-full max-w-[340px] lg:aspect-square lg:max-w-[560px]" />
       </div>
       <div className="flex flex-col gap-5">
         {Array.from({ length: 9 }, (_, index) => (

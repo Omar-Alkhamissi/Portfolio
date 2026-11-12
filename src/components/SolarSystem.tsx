@@ -33,7 +33,6 @@ import {
 const VIEWBOX = 490;
 const CENTER = VIEWBOX / 2;
 const SUN_RADIUS = 6;
-const SUN_PERCENT = ((SUN_RADIUS * 2) / VIEWBOX) * 100;
 const RING_INNER = 46;
 const RING_STEP = 24;
 const PERIOD_INNER_S = 40;
@@ -46,10 +45,12 @@ const EASE_ENTER = "cubic-bezier(0.05, 0.7, 0.1, 1)";
 const TIME_SCALE_TAU_S = 0.13;
 
 // Tilt: seen at an angle at rest, face-on while a group is active.
-const TILT_DEG = 58;
+const TILT_DEG = 52;
 const TILT_MS = 500;
-const PERSPECTIVE_PX = 1000;
-// Space kept around the tilted disc; the box grows to the full square when face-on.
+// Far enough that perspective barely widens the near edge of the disc.
+const PERSPECTIVE_PX = 2400;
+// Below lg only: space kept around the tilted disc; the box grows to the full square when
+// face-on. At lg and wider the box is a fixed square and the disc sits centred in it.
 const TILTED_MARGIN_PX = 8;
 const FAR_OPACITY_DROP = 0.45;
 
@@ -310,8 +311,9 @@ export function SolarSystem() {
     }
   }, [planets]);
 
-  // Applies the current tilt to the svg, fades labels in only when nearly face-on, and sizes
-  // the box to the disc: the tilted ring is shorter and its near edge reaches further.
+  // Applies the current tilt to the svg and fades labels in only when nearly face-on. Below lg
+  // it also sizes the box to the disc: the tilted ring is shorter and its near edge reaches
+  // further. At lg and wider the box is a fixed square (set by CSS) and the disc is centred.
   const applyTilt = useCallback(() => {
     const tilt = tiltRef.current;
     if (svgRef.current) {
@@ -324,6 +326,16 @@ export function SolarSystem() {
     const width = widthRef.current;
     const box = orreryRef.current;
     if (width <= 0 || !box) {
+      return;
+    }
+    if (wideRef.current) {
+      box.style.height = "";
+      if (svgRef.current) {
+        svgRef.current.style.top = "0px";
+      }
+      if (sunRef.current) {
+        sunRef.current.style.top = "50%";
+      }
       return;
     }
     const rad = (tilt * Math.PI) / 180;
@@ -376,6 +388,7 @@ export function SolarSystem() {
     }
 
     const measure = () => {
+      wideRef.current = window.matchMedia("(min-width: 1024px)").matches;
       const width = element.getBoundingClientRect().width;
       if (width <= 0) {
         return;
@@ -391,7 +404,8 @@ export function SolarSystem() {
       const unitsPerPx = VIEWBOX / width;
       bleedRef.current = {
         left: (wide ? 28 : 16) * unitsPerPx,
-        right: (wide ? 100 : 16) * unitsPerPx,
+        // The box fills its column, so only the column gap (64px) is free on the right.
+        right: (wide ? 56 : 16) * unitsPerPx,
       };
       setLabelUnits(next);
     };
@@ -422,10 +436,11 @@ export function SolarSystem() {
       if (activeRef.current) {
         deactivate(activeRef.current);
       }
+      applyTilt();
     };
     query.addEventListener("change", onChange);
     return () => query.removeEventListener("change", onChange);
-  }, [deactivate]);
+  }, [applyTilt, deactivate]);
 
   // Below lg a pinned group also clears on Escape, wherever focus is.
   useEffect(() => {
@@ -622,17 +637,18 @@ export function SolarSystem() {
   return (
     <div
       ref={rootRef}
-      className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,560px)_1fr] lg:gap-16"
+      className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 lg:items-center lg:gap-16"
     >
       <style>{`@keyframes orrery-ray { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }`}</style>
       {/* Clipped sideways below lg: the perspective makes the near edge wider than the box. */}
-      <div className="min-w-0 overflow-x-clip pb-8 lg:sticky lg:top-24 lg:self-start lg:overflow-x-visible lg:pb-0">
-      <div className="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1">
+      <div className="min-w-0 overflow-x-clip pb-8 lg:relative lg:overflow-x-visible lg:pb-0">
+      {/* Above the box below lg; at lg it sits in the square's top-left corner, left empty by the circle. */}
+      <div className="mb-3 flex flex-wrap items-baseline gap-x-4 gap-y-1 lg:pointer-events-none lg:absolute lg:left-0 lg:top-0 lg:z-10 lg:mb-0 lg:max-w-[220px] lg:flex-col lg:flex-nowrap lg:items-start lg:[&_button]:pointer-events-auto">
         <MotionToggle showHelp />
       </div>
       <div
         ref={orreryRef}
-        className="relative aspect-[100/57] w-full max-w-[340px] lg:max-w-[496px]"
+        className="relative aspect-[100/57] w-full max-w-[340px] lg:aspect-square lg:max-w-[560px]"
         onPointerLeave={(event) => {
           if (
             event.pointerType !== "touch" &&
@@ -809,14 +825,15 @@ export function SolarSystem() {
           </g>
         </svg>
 
-        {/* The sun stays round: it is not part of the tilted svg. */}
+        {/* The sun stays round: it is not part of the tilted svg, and its size is in px because
+            a percent height would follow the box height, which changes with the tilt below lg. */}
         <span
           ref={sunRef}
           aria-hidden="true"
           className="pointer-events-none absolute left-1/2 top-1/2 rounded-full bg-star"
           style={{
-            width: `${SUN_PERCENT}%`,
-            height: `${SUN_PERCENT}%`,
+            width: SUN_RADIUS * 2,
+            height: SUN_RADIUS * 2,
             transform: `translate(-50%, -50%) scale(${entered ? 1 : 0.6})`,
             transition: motionStill ? "none" : `transform ${SUN_IN_MS}ms ${EASE_ENTER}`,
           }}
