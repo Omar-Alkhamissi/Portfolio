@@ -69,7 +69,7 @@ export function Hero() {
           {sentenceCase(site.title)}
         </motion.p>
 
-        <div className="mt-8 grid gap-y-12 lg:grid-cols-[minmax(0,60ch)_minmax(0,24rem)] lg:justify-between lg:gap-x-16">
+        <div className="mt-8 grid gap-y-12 lg:grid-cols-2 lg:gap-x-16">
           <div>
             <motion.div variants={item} className="max-w-[60ch] space-y-4">
               <p className="text-16 text-fg">{site.subtitle}</p>
@@ -109,10 +109,10 @@ export function Hero() {
           </div>
 
           <motion.div variants={item} aria-labelledby="how-i-work">
-            <h2 id="how-i-work" className="text-14 text-fg-muted">
+            <h2 id="how-i-work" className="text-21 font-medium text-fg">
               How I like to work
             </h2>
-            <dl className="mt-4 space-y-5">
+            <dl className="mt-5 grid gap-x-8 gap-y-6 sm:grid-cols-2">
               {workPrinciples.map((p) => (
                 <div key={p.title}>
                   <dt className="text-16 font-medium text-fg">{p.title}</dt>
