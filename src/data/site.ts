@@ -19,7 +19,7 @@ export const site = {
 
   // Anchors used by the navbar
   nav: [
-    { label: "About", href: "#about" },
+    { label: "About", href: "#top" },
     { label: "Skills", href: "#skills" },
     { label: "Projects", href: "#projects" },
     { label: "GitHub", href: "#github" },
@@ -27,3 +27,22 @@ export const site = {
     { label: "Contact", href: "#contact" },
   ],
 } as const;
+
+export const workPrinciples = [
+  {
+    title: "Solve the real problem",
+    body: "Start with what matters and avoid adding complexity too early.",
+  },
+  {
+    title: "Think end to end",
+    body: "Frontend, API, and data choices should support one clear flow.",
+  },
+  {
+    title: "Keep code readable",
+    body: "Easy to trace, rename, test, and extend without friction.",
+  },
+  {
+    title: "Hand off cleanly",
+    body: "Another developer should be able to jump in confidently.",
+  },
+] as const;
