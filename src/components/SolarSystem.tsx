@@ -242,6 +242,8 @@ function tailSegmentPath(radius: number, tailDeg: number, index: number) {
 export function SolarSystem() {
   const [activeGroup, setActiveGroup] = useState<string | null>(null);
   const [activeSkill, setActiveSkill] = useState<string | null>(null);
+  // A click on a planet pins its skill: it stays lit after the pointer leaves, until unpinned.
+  const [pinned, setPinned] = useState<{ groupId: string; skill: string } | null>(null);
   const [labelUnits, setLabelUnits] = useState(14);
   const [ignited, setIgnited] = useState(false);
   const [pageVisible, setPageVisible] = useState(
@@ -267,6 +269,10 @@ export function SolarSystem() {
   const labelRefs = useRef<Map<string, SVGTextElement>>(new Map());
   const activeRef = useRef<string | null>(null);
   const sourceRef = useRef<"list" | "orrery">("list");
+  const activeSkillRef = useRef<string | null>(null);
+  const pinnedRef = useRef<{ groupId: string; skill: string } | null>(null);
+  // The planet under the mouse, so unpinning can leave it lit.
+  const hoverRef = useRef<{ groupId: string; skill: string } | null>(null);
   const rayKeyRef = useRef<string | null>(null);
   const timeRef = useRef(0);
   const timeScaleRef = useRef(1);
@@ -306,6 +312,7 @@ export function SolarSystem() {
 
   const rayKey = activeGroup && activeSkill ? `${activeGroup}::${activeSkill}` : null;
   rayKeyRef.current = rayKey;
+  activeSkillRef.current = activeSkill;
 
   const setPhase = useCallback((phase: Phase) => {
     phaseRef.current = phase;
@@ -324,18 +331,61 @@ export function SolarSystem() {
     [],
   );
 
-  const deactivate = useCallback((groupId: string) => {
-    if (activeRef.current !== groupId) {
-      return;
-    }
-    activeRef.current = null;
-    setActiveGroup(null);
-    setActiveSkill(null);
-  }, []);
+  // Where a hover would clear, a pinned skill comes back instead.
+  const deactivate = useCallback(
+    (groupId: string) => {
+      if (activeRef.current !== groupId) {
+        return;
+      }
+      const pin = pinnedRef.current;
+      if (pin) {
+        activate(pin.groupId, pin.skill, "orrery");
+        return;
+      }
+      activeRef.current = null;
+      setActiveGroup(null);
+      setActiveSkill(null);
+    },
+    [activate],
+  );
 
   const clearSkill = useCallback((skill: string) => {
-    setActiveSkill((current) => (current === skill ? null : current));
+    setActiveSkill((current) => {
+      if (current !== skill) {
+        return current;
+      }
+      const pin = pinnedRef.current;
+      return pin && activeRef.current === pin.groupId ? pin.skill : null;
+    });
   }, []);
+
+  const pinSkill = useCallback(
+    (groupId: string, skill: string) => {
+      const pin = { groupId, skill };
+      pinnedRef.current = pin;
+      setPinned(pin);
+      activate(groupId, skill, "orrery");
+    },
+    [activate],
+  );
+
+  // Drops the pin. A planet still under the mouse stays lit; otherwise the pinned display clears.
+  const unpin = useCallback(() => {
+    const pin = pinnedRef.current;
+    if (!pin) {
+      return;
+    }
+    pinnedRef.current = null;
+    setPinned(null);
+    const hover = hoverRef.current;
+    if (hover) {
+      activate(hover.groupId, hover.skill, "orrery");
+    } else if (activeRef.current === pin.groupId && activeSkillRef.current === pin.skill) {
+      activeRef.current = null;
+      setActiveGroup(null);
+      setActiveSkill(null);
+    }
+  }, [activate]);
 
   const toggle = useCallback(
     (groupId: string) => {
@@ -646,6 +696,20 @@ export function SolarSystem() {
     return () => window.removeEventListener("keydown", onKey);
   }, [activeGroup, deactivate]);
 
+  // A pinned skill also unpins on Escape, wherever focus is.
+  useEffect(() => {
+    if (!pinned) {
+      return;
+    }
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") {
+        unpin();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [pinned, unpin]);
+
   // Everything starts hidden. Motion off shows the resting orrery at once; motion switched on
   // again after the entrance already ran eases the speed in instead of starting hard.
   useLayoutEffect(() => {
@@ -918,6 +982,7 @@ export function SolarSystem() {
       <div
         ref={orreryRef}
         className="relative aspect-[100/57] w-full max-w-[340px] lg:aspect-square lg:max-w-[560px]"
+        onClick={unpin}
         onPointerLeave={(event) => {
           if (
             event.pointerType !== "touch" &&
@@ -1023,28 +1088,32 @@ export function SolarSystem() {
                         ref={mapRef(atRefs.current, planet.key)}
                         transform={`translate(${planet.ringRadius} 0)`}
                         pointerEvents={entered ? undefined : "none"}
+                        data-pinned={
+                          pinned?.groupId === group.id && pinned.skill === planet.skill
+                            ? "true"
+                            : undefined
+                        }
                         onPointerEnter={(event) => {
                           if (event.pointerType !== "touch" && wideRef.current) {
+                            hoverRef.current = { groupId: group.id, skill: planet.skill };
                             activate(group.id, planet.skill, "orrery");
                           }
                         }}
                         onPointerLeave={(event) => {
+                          hoverRef.current = null;
                           if (event.pointerType !== "touch" && wideRef.current) {
                             clearSkill(planet.skill);
                           }
                         }}
-                        style={{ cursor: skillProjectCount(planet.skill) > 0 ? "pointer" : undefined }}
+                        style={{ cursor: "pointer" }}
                         onClick={(event) => {
-                          const touch =
-                            !wideRef.current ||
-                            (event.nativeEvent as globalThis.PointerEvent).pointerType === "touch";
-                          if (!touch || activeRef.current === group.id) {
-                            if (selectSkill(planet.skill)) {
-                              return;
-                            }
-                          }
-                          if (touch) {
-                            toggle(group.id);
+                          // A click pins the skill and never scrolls; the readout offers the jump.
+                          event.stopPropagation();
+                          const pin = pinnedRef.current;
+                          if (pin && pin.groupId === group.id && pin.skill === planet.skill) {
+                            unpin();
+                          } else {
+                            pinSkill(group.id, planet.skill);
                           }
                         }}
                       >
@@ -1141,12 +1210,20 @@ export function SolarSystem() {
         </span>
       </div>
       {/* One line for the aimed skill; its height is always reserved so nothing jumps. */}
-      <p
+      <div
         aria-live="polite"
-        className="m-0 mt-3 h-6 text-[14px] leading-6 text-fg-muted"
+        className="m-0 mt-3 flex h-6 items-center gap-3 whitespace-nowrap text-[14px] leading-6 text-fg-muted"
       >
         {rayKey && activeSkill ? projectsLine(activeSkill) : null}
-      </p>
+        {pinned &&
+        activeSkill === pinned.skill &&
+        activeGroup === pinned.groupId &&
+        skillProjectCount(pinned.skill) > 0 ? (
+          <button type="button" className="link" onClick={() => selectSkill(pinned.skill)}>
+            Show on the map
+          </button>
+        ) : null}
+      </div>
       </div>
 
       <ul className="m-0 flex list-none flex-col gap-5 p-0">
