@@ -57,6 +57,13 @@ const NEBULA_FADE_MS = 700;
 const NEBULA_RESIZE_DEBOUNCE_MS = 250;
 // The nebula layers reach this far past every viewport edge so they can drift.
 const NEBULA_OVERSCAN_PX = 140;
+// While a resize or zoom settles, the painted nebula is stretched to the viewport.
+// It never shrinks below this share of its painted size, so the drift cannot
+// slide an edge into view.
+const NEBULA_MIN_FIT = 0.6;
+// Zoomed out (devicePixelRatio under 1) the nebula picture is painted coarser in
+// CSS px, up to this many times, so it keeps the same cost per device pixel.
+const NEBULA_MAX_SCALE_BOOST = 4;
 const METEOR_MIN_GAP_MS = 18000;
 const METEOR_MAX_GAP_MS = 40000;
 
@@ -478,7 +485,7 @@ export function AnimatedBackground() {
     const lite = quality.maxDpr <= 1;
     // Layer B is skipped on lite, so hide any copy a heavier profile painted.
     if (lite && nebulaBRef.current) nebulaBRef.current.dataset.ready = "false";
-    const nebulaScale = lite ? 3 : 2;
+    const nebulaBaseScale = lite ? 3 : 2;
     const nebulaOctaves = lite ? 5 : 6;
 
     let reduceMotion = getMotionOff();
@@ -520,8 +527,36 @@ export function AnimatedBackground() {
         ),
       );
 
-    // Overscan is a whole number of nebula pixels so the half-scale grid lines up.
-    const overscan = Math.ceil(NEBULA_OVERSCAN_PX / nebulaScale) * nebulaScale;
+    // CSS px per nebula pixel. Zoomed out, one CSS px is under one device pixel,
+    // so a coarser grid keeps the same cost and look per device pixel.
+    const nebulaScaleNow = () => {
+      const d = window.devicePixelRatio || 1;
+      return nebulaBaseScale * (d < 1 ? Math.min(NEBULA_MAX_SCALE_BOOST, 1 / d) : 1);
+    };
+
+    // What each nebula layer was painted for, so it can be fitted to a new viewport.
+    const painted = new Map<
+      HTMLCanvasElement,
+      { viewWidth: number; viewHeight: number; extra: number; overscan: number }
+    >();
+
+    // Stretches each painted layer over the current viewport (CSS only, no repaint).
+    // A resize or zoom never leaves a bare edge while the new picture is made.
+    const fitNebula = () => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      for (const target of [nebulaARef.current, nebulaBRef.current]) {
+        const p = target ? painted.get(target) : undefined;
+        if (!target || !p) continue;
+        const sx = Math.max(vw / p.viewWidth, NEBULA_MIN_FIT);
+        const sy = Math.max(vh / p.viewHeight, NEBULA_MIN_FIT);
+        target.style.left = `${-p.overscan * sx}px`;
+        target.style.top = `${-p.overscan * sy}px`;
+        target.style.width = `${(p.viewWidth + 2 * p.overscan) * sx}px`;
+        target.style.height = `${(p.viewHeight + 2 * p.overscan + p.extra) * sy}px`;
+        target.style.transformOrigin = `${(p.overscan + p.viewWidth / 2) * sx}px ${(p.overscan + p.viewHeight / 2) * sy}px`;
+      }
+    };
 
     const paintLayer = (
       target: HTMLCanvasElement | null,
@@ -529,6 +564,9 @@ export function AnimatedBackground() {
       spec: NebulaSpec,
     ) => {
       if (!target) return;
+      const nebulaScale = nebulaScaleNow();
+      // Overscan is a whole number of nebula pixels so the grid lines up.
+      const overscan = Math.ceil(NEBULA_OVERSCAN_PX / nebulaScale) * nebulaScale;
       paintNebulaLayer(
         target,
         view.viewWidth,
@@ -540,6 +578,8 @@ export function AnimatedBackground() {
         quality.blobAlphaScale,
         spec,
       );
+      painted.set(target, { ...view, overscan });
+      fitNebula();
       // CSS fades the layer in (opacity) the first time it has pixels.
       target.dataset.ready = "true";
     };
@@ -631,12 +671,11 @@ export function AnimatedBackground() {
       dpr = Math.min(window.devicePixelRatio || 1, quality.maxDpr);
       width = window.innerWidth;
       height = window.innerHeight;
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      canvas.style.width = `${width}px`;
-      canvas.style.height = `${height}px`;
-      tileW = canvas.width / dpr;
-      tileH = canvas.height / dpr;
+      // The canvas itself is sized by CSS (fixed, inset 0), so it always covers the
+      // viewport. Its backing store changes in applyCanvasSize, after the new
+      // stars are ready.
+      tileW = Math.floor(width * dpr) / dpr;
+      tileH = Math.floor(height * dpr) / dpr;
       // Drift runs along the nebula band's diagonal (the same axis as setDriftAxis).
       const dx = 1.2 * width;
       const dy = -0.9 * height;
@@ -648,6 +687,12 @@ export function AnimatedBackground() {
         driftX[i] = wrapMod(driftX[i], tileW);
         driftY[i] = wrapMod(driftY[i], tileH);
       }
+    };
+
+    // Resizing clears a canvas, so this runs in the same task as the redraw.
+    const applyCanvasSize = () => {
+      canvas.width = Math.floor(width * dpr);
+      canvas.height = Math.floor(height * dpr);
     };
 
     // Drift runs on full and balanced only, and under the same rules as twinkle.
@@ -919,7 +964,11 @@ export function AnimatedBackground() {
 
     const rebuildStars = () => {
       sizeCanvas();
+      // The new layers are made off-screen, then the canvas is resized and
+      // painted in one task, so no cleared frame is ever shown.
       buildStars();
+      applyCanvasSize();
+      draw(performance.now());
       syncTwinkle();
       requestDraw();
     };
@@ -930,6 +979,8 @@ export function AnimatedBackground() {
 
     let resizeTimer = 0;
     const onResize = () => {
+      // Cheap and immediate: keep the old nebula covering the new viewport.
+      fitNebula();
       window.clearTimeout(resizeTimer);
       resizeTimer = window.setTimeout(rebuildStars, 160);
       // The old nebula stays on screen, scaled, until the new one is ready.
