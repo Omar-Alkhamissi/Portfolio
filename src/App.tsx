@@ -1,7 +1,7 @@
 import { MotionConfig } from "framer-motion";
 import { Navbar } from "./components/Navbar";
 import { Hero } from "./components/Hero";
-import { WorkPhases } from "./components/WorkPhases";
+import { WorkCourse } from "./components/WorkCourse";
 import { PortfolioStats } from "./components/PortfolioStats";
 import { Skills } from "./components/Skills";
 import { Projects } from "./components/Projects";
@@ -20,7 +20,7 @@ export default function App() {
         <Navbar />
         <main className="flex flex-col gap-24 pb-24 md:gap-36 md:pb-36">
           <Hero />
-          <WorkPhases />
+          <WorkCourse />
           <Skills />
           <Projects />
           <PortfolioStats />
