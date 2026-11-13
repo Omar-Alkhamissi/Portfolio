@@ -16,8 +16,12 @@ const WIDE_END_Y = 20;
 const NARROW_X = [10, 26];
 
 const FLIGHT_MS = 2400;
-const HOP_MS = 350;
-const HOP_MAX_MS = 700;
+/** Hover moves follow their target exponentially: the probe covers 1 - 1/e of the gap every TAU_MS. */
+const TAU_MS = 90;
+const MAX_DT_MS = 50;
+const SNAP_PX = 0.5;
+/** The waypoint lights once the probe is this close, so the ring does not wait for the slow tail. */
+const LAND_PX = 6;
 
 type Point = { x: number; y: number };
 type Leader = { x: number; y1: number; y2: number };
@@ -41,6 +45,8 @@ type Move = {
   t0: number;
   dur: number;
   entrance: boolean;
+  /** Time of the previous frame, used by the follow. */
+  last: number;
 };
 
 type Phase = "wait" | "entrance" | "ready";
@@ -144,6 +150,7 @@ export function WorkCourse() {
 
   const phaseRef = useRef<Phase>(motionOff ? "ready" : "wait");
   const activeRef = useRef(motionOff ? LAST : -1);
+  const landedRef = useRef(motionOff ? LAST : -1);
   const reachedRef = useRef(motionOff ? COUNT : 0);
   const posRef = useRef(0);
   const lensRef = useRef<Lengths | null>(null);
@@ -152,7 +159,14 @@ export function WorkCourse() {
 
   const [layout, setLayout] = useState<Layout | null>(null);
   const [reached, setReached] = useState(reachedRef.current);
-  const [active, setActive] = useState(activeRef.current);
+  /** The waypoint the probe has arrived at, or -1 while it travels. */
+  const [landed, setLanded] = useState(landedRef.current);
+
+  const land = (i: number) => {
+    if (landedRef.current === i) return;
+    landedRef.current = i;
+    setLanded(i);
+  };
 
   const paint = (pos: number) => {
     const lens = lensRef.current;
@@ -181,19 +195,32 @@ export function WorkCourse() {
     const move = moveRef.current;
     const lens = lensRef.current;
     if (!move || !lens) return;
-    const p = clamp01((now - move.t0) / move.dur);
     const to = lens.waypoints[move.target];
+    if (!move.entrance) {
+      const dt = Math.min(Math.max(now - move.last, 0), MAX_DT_MS);
+      move.last = now;
+      const next = posRef.current + (to - posRef.current) * (1 - Math.exp(-dt / TAU_MS));
+      if (Math.abs(to - next) < SNAP_PX) {
+        paint(to);
+        moveRef.current = null;
+        land(move.target);
+        return;
+      }
+      paint(next);
+      if (Math.abs(to - next) < LAND_PX) land(move.target);
+      frameRef.current = requestAnimationFrame(tick);
+      return;
+    }
+    const p = clamp01((now - move.t0) / move.dur);
     paint(move.from + (to - move.from) * easeInOutCubic(p));
     if (p < 1) {
       frameRef.current = requestAnimationFrame(tick);
       return;
     }
     moveRef.current = null;
-    if (move.entrance) {
-      phaseRef.current = "ready";
-      activeRef.current = move.target;
-      setActive(move.target);
-    }
+    phaseRef.current = "ready";
+    activeRef.current = move.target;
+    land(move.target);
   };
 
   const startFrames = () => {
@@ -215,6 +242,7 @@ export function WorkCourse() {
       t0: performance.now(),
       dur: FLIGHT_MS,
       entrance: true,
+      last: performance.now(),
     };
     startFrames();
   };
@@ -236,7 +264,7 @@ export function WorkCourse() {
     else if (move) target = move.target;
     phaseRef.current = "ready";
     activeRef.current = target;
-    setActive(target);
+    land(target);
     const lens = lensRef.current;
     if (lens) paint(lens.waypoints[target]);
   };
@@ -246,11 +274,11 @@ export function WorkCourse() {
     const lens = lensRef.current;
     if (!lens) return;
     activeRef.current = i;
-    setActive(i);
     if (motionOffRef.current) {
       stopFrames();
       moveRef.current = null;
       paint(lens.waypoints[i]);
+      land(i);
       return;
     }
     const distance = Math.abs(i - waypointPosition(posRef.current, lens));
@@ -258,15 +286,24 @@ export function WorkCourse() {
       stopFrames();
       moveRef.current = null;
       paint(lens.waypoints[i]);
+      land(i);
       return;
     }
-    moveRef.current = {
-      from: posRef.current,
-      target: i,
-      t0: performance.now(),
-      dur: Math.min(HOP_MAX_MS, HOP_MS * distance),
-      entrance: false,
-    };
+    const now = performance.now();
+    const move = moveRef.current;
+    if (move && !move.entrance) {
+      move.target = i;
+    } else {
+      moveRef.current = {
+        from: posRef.current,
+        target: i,
+        t0: now,
+        dur: 0,
+        entrance: false,
+        last: now,
+      };
+    }
+    land(-1);
     startFrames();
   };
 
@@ -359,8 +396,8 @@ export function WorkCourse() {
                   y2={leader.y2}
                   strokeWidth={1}
                   className={cn(
-                    "transition-[stroke] duration-150",
-                    active === i ? "stroke-star" : "stroke-line",
+                    !motionOff && "transition-[stroke] duration-150",
+                    landed === i ? "stroke-star" : "stroke-line",
                   )}
                 />
               ))}
@@ -388,24 +425,33 @@ export function WorkCourse() {
                   cy={p.y}
                   r={5}
                   strokeWidth={1.5}
-                  className={i < reached ? "fill-fg stroke-fg" : "fill-space stroke-fg-faint"}
+                  className={cn(
+                    !motionOff && "transition-[fill,stroke] duration-150",
+                    i < reached ? "fill-fg stroke-fg" : "fill-space stroke-fg-faint",
+                  )}
                 />
               ))}
-              {layout.points.map(
-                (p, i) =>
-                  active === i && (
-                    <circle
-                      key={i}
-                      data-ring={i}
-                      cx={p.x}
-                      cy={p.y}
-                      r={10}
-                      fill="none"
-                      strokeWidth={1.5}
-                      className="stroke-star"
-                    />
-                  ),
-              )}
+              {layout.points.map((p, i) => (
+                <circle
+                  key={i}
+                  data-ring={i}
+                  data-landed={landed === i ? "true" : "false"}
+                  cx={p.x}
+                  cy={p.y}
+                  r={10}
+                  fill="none"
+                  strokeWidth={1.5}
+                  className={cn(
+                    "origin-center stroke-star [transform-box:fill-box]",
+                    landed === i ? "scale-100 opacity-100" : "scale-[0.6] opacity-0",
+                    !motionOff && "transition-[opacity,transform]",
+                    !motionOff &&
+                      (landed === i
+                        ? "duration-200 ease-[cubic-bezier(0.05,0.7,0.1,1)]"
+                        : "duration-[120ms] ease-out"),
+                  )}
+                />
+              ))}
               <circle ref={probeRef} data-probe="" r={4} className="fill-star" />
             </svg>
           )}
