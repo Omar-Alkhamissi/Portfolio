@@ -3,11 +3,10 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Menu, X } from "lucide-react";
 import { site } from "../data/site";
 import { cn } from "../lib/cn";
+import { glideToHash } from "../lib/glide";
 import { MotionToggle } from "./MotionToggle";
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
-
-const ANCHOR_SETTLE_DELAYS_MS = [140, 420, 900, 1700];
 
 const noFill = {
   "data-lpignore": "true",
@@ -17,37 +16,6 @@ const noFill = {
   "data-form-type": "other",
   autoComplete: "off",
 } as const;
-
-function scrollToHash(hash: string) {
-  const id = hash.replace(/^#/, "");
-  const target = document.getElementById(id);
-
-  if (!target) {
-    return;
-  }
-
-  const settleScroll = () => {
-    const freshTarget = document.getElementById(id);
-    if (!freshTarget) {
-      return;
-    }
-
-    const scrollMarginTop =
-      parseFloat(window.getComputedStyle(freshTarget).scrollMarginTop) || 0;
-    const targetTop = freshTarget.getBoundingClientRect().top;
-
-    if (Math.abs(targetTop - scrollMarginTop) > 8) {
-      freshTarget.scrollIntoView({ behavior: "auto", block: "start" });
-    }
-  };
-
-  window.history.pushState(null, "", hash);
-  target.scrollIntoView({ behavior: "smooth", block: "start" });
-
-  for (const delay of ANCHOR_SETTLE_DELAYS_MS) {
-    window.setTimeout(settleScroll, delay);
-  }
-}
 
 export function Navbar() {
   const [scrolled, setScrolled] = useState(false);
@@ -83,7 +51,7 @@ export function Navbar() {
           href="#top"
           onClick={(event) => {
             event.preventDefault();
-            scrollToHash("#top");
+            glideToHash("#top");
           }}
           className="text-16 font-medium text-fg"
           aria-label={`${site.name}, home`}
@@ -98,7 +66,7 @@ export function Navbar() {
                 href={item.href}
                 onClick={(event) => {
                   event.preventDefault();
-                  scrollToHash(item.href);
+                  glideToHash(item.href);
                 }}
                 className="text-14 text-fg-muted transition-colors duration-150 ease-out hover:text-fg"
               >
@@ -154,7 +122,7 @@ export function Navbar() {
                     onClick={(event) => {
                       event.preventDefault();
                       setOpen(false);
-                      scrollToHash(item.href);
+                      glideToHash(item.href);
                     }}
                     className="block py-2.5 text-16 text-fg-muted transition-colors duration-150 ease-out hover:text-fg"
                   >

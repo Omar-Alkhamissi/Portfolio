@@ -12,6 +12,7 @@ import {
 import { useInView } from "framer-motion";
 import { skillGroups } from "../data/skills";
 import { cn } from "../lib/cn";
+import { glideToHash } from "../lib/glide";
 import { useMotionOff } from "../lib/motion";
 import { setSkillFocus, useSkillFocus } from "../lib/skillFocus";
 import { skillProjectCount } from "../lib/skillProjects";
@@ -866,9 +867,7 @@ export function SolarSystem() {
       return false;
     }
     setSkillFocus(skill);
-    document
-      .getElementById("projects")
-      ?.scrollIntoView({ behavior: motionOff ? "auto" : "smooth", block: "start" });
+    glideToHash("#projects", { pushState: false });
     return true;
   };
 
