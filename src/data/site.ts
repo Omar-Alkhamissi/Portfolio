@@ -19,7 +19,7 @@ export const site = {
 
   // Anchors used by the navbar
   nav: [
-    { label: "About", href: "#top" },
+    { label: "About", href: "#about" },
     { label: "Skills", href: "#skills" },
     { label: "Projects", href: "#projects" },
     { label: "GitHub", href: "#github" },

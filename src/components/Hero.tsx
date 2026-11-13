@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { Github, Linkedin } from "lucide-react";
-import { site, workPrinciples } from "../data/site";
+import { site } from "../data/site";
 
 const EASE_OUT = [0.23, 1, 0.32, 1] as const;
 
@@ -69,59 +69,41 @@ export function Hero() {
           {sentenceCase(site.title)}
         </motion.p>
 
-        <div className="mt-8 grid gap-y-12 lg:grid-cols-2 lg:gap-x-16">
-          <div>
-            <motion.div variants={item} className="max-w-[60ch] space-y-4">
-              <p className="text-16 text-fg">{site.subtitle}</p>
-              <p className="text-16 text-fg-muted">{site.intro}</p>
-            </motion.div>
+        <motion.div variants={item} className="mt-8 max-w-[60ch] space-y-4">
+          <p className="text-16 text-fg">{site.subtitle}</p>
+          <p className="text-16 text-fg-muted">{site.intro}</p>
+        </motion.div>
 
-            <motion.div
-              variants={item}
-              className="mt-10 flex flex-wrap items-center gap-x-7 gap-y-4"
-            >
-              <a href={site.links.resume} download {...noFill} className="btn-primary">
-                Download resume
-              </a>
-              <a
-                href={site.links.github}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="GitHub profile"
-                {...noFill}
-                className="link inline-flex items-center gap-2 text-14"
-              >
-                <Github size={16} strokeWidth={1.5} aria-hidden="true" />
-                GitHub
-              </a>
-              <a
-                href={site.links.linkedin}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="LinkedIn profile"
-                {...noFill}
-                className="link inline-flex items-center gap-2 text-14"
-              >
-                <Linkedin size={16} strokeWidth={1.5} aria-hidden="true" />
-                LinkedIn
-              </a>
-            </motion.div>
-          </div>
-
-          <motion.div variants={item} aria-labelledby="how-i-work">
-            <h2 id="how-i-work" className="text-21 font-medium text-fg">
-              How I like to work
-            </h2>
-            <dl className="mt-5 grid gap-x-8 gap-y-6 sm:grid-cols-2">
-              {workPrinciples.map((p) => (
-                <div key={p.title}>
-                  <dt className="text-16 font-medium text-fg">{p.title}</dt>
-                  <dd className="mt-1 text-16 text-fg-muted">{p.body}</dd>
-                </div>
-              ))}
-            </dl>
-          </motion.div>
-        </div>
+        <motion.div
+          variants={item}
+          className="mt-10 flex flex-wrap items-center gap-x-7 gap-y-4"
+        >
+          <a href={site.links.resume} download {...noFill} className="btn-primary">
+            Download resume
+          </a>
+          <a
+            href={site.links.github}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub profile"
+            {...noFill}
+            className="link inline-flex items-center gap-2 text-14"
+          >
+            <Github size={16} strokeWidth={1.5} aria-hidden="true" />
+            GitHub
+          </a>
+          <a
+            href={site.links.linkedin}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="LinkedIn profile"
+            {...noFill}
+            className="link inline-flex items-center gap-2 text-14"
+          >
+            <Linkedin size={16} strokeWidth={1.5} aria-hidden="true" />
+            LinkedIn
+          </a>
+        </motion.div>
       </motion.div>
     </section>
   );
