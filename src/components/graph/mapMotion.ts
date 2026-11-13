@@ -218,7 +218,11 @@ export const SPAWN = {
   rootGapMs: 90,
   crossMs: 380,
   crossGapMs: 35,
+  // Only sets the scale below: the spawn-in is squeezed to fit maxMs as if the settle took this long.
   settleMs: 300,
+  // How long the links ease from drawing brightness to resting brightness, after the last link is drawn.
+  // Not scaled, and it runs past maxMs, so the spawn-in before it is unchanged.
+  fadeMs: 1000,
   maxMs: 2800,
 };
 
@@ -316,8 +320,8 @@ export function planSpawn(
     ringMs: SPAWN.ringMs * k,
     nameMs: SPAWN.nameMs * k,
     settleAt: settleAt * k,
-    settleMs: SPAWN.settleMs * k,
-    total: raw * k,
+    settleMs: SPAWN.fadeMs,
+    total: settleAt * k + SPAWN.fadeMs,
   };
 }
 

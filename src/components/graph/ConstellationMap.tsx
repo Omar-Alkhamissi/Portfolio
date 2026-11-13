@@ -503,7 +503,9 @@ export function ConstellationMap({
       nodes.map((_, index) => {
         const period = 3 + fraction(Math.sin((index + 1) * 12.9898) * 43758.5453) * 4;
         const offset = fraction(Math.sin((index + 1) * 78.233) * 12345.6789);
-        return { period, delay: -offset * period };
+        // A positive delay: the star starts at full brightness and begins to dim after its own offset,
+        // so it never steps down when the twinkle first turns on.
+        return { period, delay: offset * period };
       }),
     [nodes],
   );
